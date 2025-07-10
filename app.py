@@ -17,6 +17,7 @@ class VoteData(BaseModel):
     voteHash: str
     blockNumber: str
     transactionHash: str
+    publicKey: int  # Public key passed with each request
 
 class EncryptedVoteData(BaseModel):
     candidateId: str
@@ -30,17 +31,6 @@ class EncryptedVoteData(BaseModel):
 def encrypt_value(m, n):
     """BGN-style additive encryption"""
     return m + randint(1, 9999999) * n
-
-def load_public_key(filename):
-    """Load BGN public key from file"""
-    try:
-        with open(filename, 'rb') as f:
-            key_data = json.loads(base64.b64decode(f.read()).decode('utf-8'))
-            return key_data['n']
-    except FileNotFoundError:
-        raise HTTPException(status_code=500, detail="Public key file not found")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error loading public key: {str(e)}")
 
 def encrypt_string(message: str, public_key_n: int) -> str:
     """Encrypt a string using BGN encryption"""
@@ -65,29 +55,16 @@ def encrypt_string(message: str, public_key_n: int) -> str:
     # Join all encrypted characters with a delimiter
     return "|".join(encrypted_chars)
 
-def encrypt_vote_data(vote_data: VoteData, public_key_n: int) -> EncryptedVoteData:
+def encrypt_vote_data(vote_data: VoteData) -> EncryptedVoteData:
     """Encrypt all fields in the vote data"""
     return EncryptedVoteData(
-        candidateId=encrypt_string(vote_data.candidateId, public_key_n),
-        timestamp=encrypt_string(vote_data.timestamp, public_key_n),
-        walletAddress=encrypt_string(vote_data.walletAddress, public_key_n),
-        voteHash=encrypt_string(vote_data.voteHash, public_key_n),
-        blockNumber=encrypt_string(vote_data.blockNumber, public_key_n),
-        transactionHash=encrypt_string(vote_data.transactionHash, public_key_n)
+        candidateId=encrypt_string(vote_data.candidateId, vote_data.publicKey),
+        timestamp=encrypt_string(vote_data.timestamp, vote_data.publicKey),
+        walletAddress=encrypt_string(vote_data.walletAddress, vote_data.publicKey),
+        voteHash=encrypt_string(vote_data.voteHash, vote_data.publicKey),
+        blockNumber=encrypt_string(vote_data.blockNumber, vote_data.publicKey),
+        transactionHash=encrypt_string(vote_data.transactionHash, vote_data.publicKey)
     )
-
-# Load public key on startup
-PUBLIC_KEY_PATH = "bgn_keys/bgn_public.pem"
-public_key_n = None
-
-@app.on_event("startup")
-async def startup_event():
-    global public_key_n
-    try:
-        public_key_n = load_public_key(PUBLIC_KEY_PATH)
-        print(f"Public key loaded successfully")
-    except Exception as e:
-        print(f"Warning: Could not load public key on startup: {e}")
 
 # API Endpoints
 @app.get("/")
@@ -96,31 +73,16 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    return {
-        "status": "healthy",
-        "public_key_loaded": public_key_n is not None
-    }
+    return {"status": "healthy"}
 
 @app.post("/encrypt-vote", response_model=EncryptedVoteData)
 async def encrypt_vote(vote_data: VoteData):
     """
     Encrypt vote data using BGN encryption
     """
-    global public_key_n
-    
-    # Check if public key is loaded
-    if public_key_n is None:
-        try:
-            public_key_n = load_public_key(PUBLIC_KEY_PATH)
-        except Exception as e:
-            raise HTTPException(
-                status_code=500, 
-                detail="Public key not available. Please ensure the key file exists."
-            )
-    
     try:
-        # Encrypt the vote data
-        encrypted_data = encrypt_vote_data(vote_data, public_key_n)
+        # Encrypt the vote data using the provided public key
+        encrypted_data = encrypt_vote_data(vote_data)
         return encrypted_data
     
     except Exception as e:
@@ -150,7 +112,8 @@ async def get_example():
             "walletAddress": "0x7D11c7F2594525Af3Bc2ba611A804a1A235c2FF0",
             "voteHash": "0xf20aa3ffa7b47518dbeddcb1f0f0b4c3b9950049ebcafc37d36eccb7573b4405",
             "blockNumber": "0",
-            "transactionHash": "0x3a9aa3fb330361635e9106a4b1f83682a7d9e37b9ef5d79e63235fa81ac5be24"
+            "transactionHash": "0x3a9aa3fb330361635e9106a4b1f83682a7d9e37b9ef5d79e63235fa81ac5be24",
+            "publicKey": 123456789  # Example public key value
         }
     }
 

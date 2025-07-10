@@ -17,7 +17,7 @@ class VoteData(BaseModel):
     voteHash: str
     blockNumber: str
     transactionHash: str
-    publicKey: int  # Public key passed with each request
+    publicKey: str  # Base64 encoded JSON public key
 
 class EncryptedVoteData(BaseModel):
     candidateId: str
@@ -31,6 +31,18 @@ class EncryptedVoteData(BaseModel):
 def encrypt_value(m, n):
     """BGN-style additive encryption"""
     return m + randint(1, 9999999) * n
+
+def decode_public_key(encoded_key: str) -> int:
+    """Decode base64 encoded JSON public key"""
+    try:
+        # Decode base64
+        decoded_bytes = base64.b64decode(encoded_key)
+        # Parse JSON
+        key_data = json.loads(decoded_bytes.decode('utf-8'))
+        # Extract 'n' value and convert to int
+        return int(key_data['n'])
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid public key format: {str(e)}")
 
 def encrypt_string(message: str, public_key_n: int) -> str:
     """Encrypt a string using BGN encryption"""
@@ -57,13 +69,16 @@ def encrypt_string(message: str, public_key_n: int) -> str:
 
 def encrypt_vote_data(vote_data: VoteData) -> EncryptedVoteData:
     """Encrypt all fields in the vote data"""
+    # Decode the public key
+    public_key_n = decode_public_key(vote_data.publicKey)
+    
     return EncryptedVoteData(
-        candidateId=encrypt_string(vote_data.candidateId, vote_data.publicKey),
-        timestamp=encrypt_string(vote_data.timestamp, vote_data.publicKey),
-        walletAddress=encrypt_string(vote_data.walletAddress, vote_data.publicKey),
-        voteHash=encrypt_string(vote_data.voteHash, vote_data.publicKey),
-        blockNumber=encrypt_string(vote_data.blockNumber, vote_data.publicKey),
-        transactionHash=encrypt_string(vote_data.transactionHash, vote_data.publicKey)
+        candidateId=encrypt_string(vote_data.candidateId, public_key_n),
+        timestamp=encrypt_string(vote_data.timestamp, public_key_n),
+        walletAddress=encrypt_string(vote_data.walletAddress, public_key_n),
+        voteHash=encrypt_string(vote_data.voteHash, public_key_n),
+        blockNumber=encrypt_string(vote_data.blockNumber, public_key_n),
+        transactionHash=encrypt_string(vote_data.transactionHash, public_key_n)
     )
 
 # API Endpoints
@@ -113,12 +128,10 @@ async def get_example():
             "voteHash": "0xf20aa3ffa7b47518dbeddcb1f0f0b4c3b9950049ebcafc37d36eccb7573b4405",
             "blockNumber": "0",
             "transactionHash": "0x3a9aa3fb330361635e9106a4b1f83682a7d9e37b9ef5d79e63235fa81ac5be24",
-            "publicKey": 123456789  # Example public key value
+            "publicKey": "eyJuIjogIjMxMjEzNTQxMjczNTQ2MjIyOTU2ODgwNDMyNjk0NzYwNDkxMzkyNzgyNjgxODg1MzMwNjM2ODAxNjA2MTA0MzUzMzY5MTEyNTc3MDU1Mjc0Mjg5NDY1NDQ4NDc0ODYxMzU2NzYwNjE4NjYyMTE2OTMzNTc1NDc4NDc1MTE3NTIyNzA3NjQ1NTM3NDU3NjAzNzEwNTcwMTgwNzAxIn0"
         }
     }
 
-# For local development
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=8000)

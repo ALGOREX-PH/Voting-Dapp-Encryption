@@ -257,7 +257,7 @@ def encrypt_string_chunked(message: str, public_key_n: int) -> str:
         raise Exception(f"Chunked string encryption failed: {str(e)}")
 
 def decrypt_string_chunked(encrypted_b64: str, p: int, q: int) -> str:
-    """Decrypt a chunked encrypted string"""
+    """Decrypt a chunked encrypted string with better error handling"""
     try:
         # Check if this is a chunked message (contains separators)
         if "|" in encrypted_b64:
@@ -266,16 +266,30 @@ def decrypt_string_chunked(encrypted_b64: str, p: int, q: int) -> str:
             decrypted_chunks = []
             
             for chunk in chunks:
-                decrypted_chunk = decrypt_string(chunk, p, q)
-                decrypted_chunks.append(decrypted_chunk)
+                try:
+                    decrypted_chunk = decrypt_string(chunk, p, q)
+                    decrypted_chunks.append(decrypted_chunk)
+                except Exception as chunk_error:
+                    # If chunk decryption fails, return error info
+                    return f"[CHUNK_ERROR: {str(chunk_error)}]"
             
             return "".join(decrypted_chunks)
         else:
-            # Single chunk, decrypt normally
-            return decrypt_string(encrypted_b64, p, q)
+            # Single chunk, try to decrypt
+            try:
+                return decrypt_string(encrypted_b64, p, q)
+            except Exception as decrypt_error:
+                # If decryption fails, try alternative approach
+                try:
+                    # Try the compatible decryption method
+                    encrypted_int = int(base64.b64decode(encrypted_b64).decode())
+                    decrypted_int = decrypt_value(encrypted_int, p, q)
+                    return str(decrypted_int)
+                except Exception as alt_error:
+                    return f"[DECRYPT_ERROR: Original={str(decrypt_error)}, Alternative={str(alt_error)}]"
     
     except Exception as e:
-        raise Exception(f"Chunked string decryption failed: {str(e)}")
+        return f"[CHUNKED_DECRYPT_ERROR: {str(e)}]"
 
 def encrypt_vote_data(vote_data: VoteData) -> EncryptedVoteData:
     """Encrypt all fields in the vote data using chunked encryption"""
@@ -357,8 +371,7 @@ async def encrypt_vote(vote_data: VoteData):
 @app.post("/decrypt-string", response_model=DecryptResponse)
 async def decrypt_string_endpoint(request: DecryptRequest):
     """
-    Decrypt a single encrypted string using BGN decryption
-    Accepts JSON body only
+    Decrypt a single encrypted string using BGN decryption with fallback
     """
     try:
         # Parse private key
@@ -366,8 +379,16 @@ async def decrypt_string_endpoint(request: DecryptRequest):
         p = int(priv["p"])
         q = int(priv["q"])
         
-        # Decrypt the string using chunked method
-        decrypted = decrypt_string_chunked(request.encrypted_data, p, q)
+        # Try the chunked method first
+        try:
+            decrypted = decrypt_string_chunked(request.encrypted_data, p, q)
+            # If it returns an error message, try the compatible method
+            if decrypted.startswith("[") and "ERROR" in decrypted:
+                # Try compatible decryption
+                decrypted = decrypt_string_compatible(request.encrypted_data, p, q)
+        except Exception:
+            # If chunked method fails completely, try compatible method
+            decrypted = decrypt_string_compatible(request.encrypted_data, p, q)
         
         return {"decrypted_message": decrypted}
     

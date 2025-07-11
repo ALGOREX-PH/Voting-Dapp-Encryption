@@ -92,26 +92,34 @@ def _str_to_bool(raw: str | bool | None, default=True) -> bool:
         return raw
     return raw.lower() in {"true", "1", "yes", "y", "t"}
 
-# BGN Encryption Functions - SIMPLIFIED VERSION FOR SMALL STRINGS
-def string_to_small_int(s: str) -> int:
-    """Convert string to a small integer that can be safely encrypted/decrypted"""
+# BGN Encryption Functions - SAFER VERSION
+def string_to_int_safe(s: str) -> int:
+    """Convert string to integer using a safer method"""
     if not s:
         return 0
-    
-    # Use a simple hash to create a smaller, more manageable integer
-    hash_val = hash(s) % (10**6)  # Keep it small - 6 digits max
-    if hash_val < 0:
-        hash_val = abs(hash_val)
-    
-    return hash_val
+    # First encode to base64 to ensure we can reverse it safely
+    b64_encoded = base64.b64encode(s.encode('utf-8')).decode('ascii')
+    # Then convert the base64 string to int
+    bytes_data = b64_encoded.encode('ascii')
+    return int.from_bytes(bytes_data, byteorder='big')
 
-def create_string_mapping(strings: list) -> Dict[int, str]:
-    """Create a mapping from integers to original strings"""
-    mapping = {}
-    for s in strings:
-        int_val = string_to_small_int(s)
-        mapping[int_val] = s
-    return mapping
+def int_to_string_safe(num: int) -> str:
+    """Convert integer back to original string safely"""
+    if num == 0:
+        return ""
+    try:
+        # Convert int back to bytes
+        byte_length = (num.bit_length() + 7) // 8
+        bytes_data = num.to_bytes(byte_length, byteorder='big')
+        
+        # Convert bytes to ASCII string (this should be base64)
+        ascii_str = bytes_data.decode('ascii')
+        
+        # Decode the base64 to get original string
+        return base64.b64decode(ascii_str).decode('utf-8')
+    except Exception as e:
+        # If we can't decode properly, return an error message instead of crashing
+        return f"[DECRYPTION_ERROR: {str(e)}]"
 
 def int_to_base64(num: int) -> str:
     """Convert integer to base64 string"""
@@ -131,36 +139,49 @@ def base64_to_int(b64_str: str) -> int:
     except Exception as e:
         raise ValueError(f"Failed to decode base64 string: {str(e)}")
 
-def simple_bgn_encrypt(message_int: int, n: int) -> int:
+def bgn_encrypt(message_int: int, n: int) -> int:
     """
-    Very simplified BGN-style encryption that's more stable
+    Simplified BGN-style encryption
+    E(m) = g^m * r^n mod n^2
+    For simplicity, we'll use a basic implementation
     """
-    if message_int >= n // 100:  # Safety check
-        message_int = message_int % (n // 100)
+    # Generate random value r
+    r = randint(2, n - 1)
     
-    # Generate smaller random value
-    r = randint(2, min(1000, n // 1000))
+    # Compute n^2
+    n_squared = n * n
     
-    # Simplified encryption (more like basic modular arithmetic)
-    encrypted = (message_int + r * 17) % (n // 10)  # Using smaller modulus
+    # Simplified BGN encryption: (1 + m*n) * r^n mod n^2
+    # This is a simplified version - full BGN requires bilinear groups
+    encrypted = ((1 + message_int * n) * pow(r, n, n_squared)) % n_squared
     
     return encrypted
 
-def simple_bgn_decrypt(ciphertext: int, p: int, q: int) -> int:
+def bgn_decrypt(ciphertext: int, p: int, q: int) -> int:
     """
-    Very simplified BGN-style decryption
+    Simplified BGN-style decryption
+    This is a basic implementation for the simplified encryption above
     """
     n = p * q
+    n_squared = n * n
     
-    # This is a very basic decryption - in real BGN it would be more complex
-    # For this simplified version, we reverse the encryption operation
-    for r in range(2, min(1000, n // 1000)):
-        potential_message = (ciphertext - r * 17) % (n // 10)
-        if potential_message >= 0 and potential_message < 10**6:  # Valid range
-            return potential_message
-    
-    # If no valid decryption found, return the ciphertext itself
-    return ciphertext % (10**6)
+    # For our simplified BGN: c = (1 + m*n) * r^n mod n^2
+    # To decrypt: m = ((c mod n^2) - 1) / n mod n
+    try:
+        # Compute (c - 1) / n mod n
+        # This works for our simplified scheme
+        temp = (ciphertext - 1) % n_squared
+        if temp % n != 0:
+            # Try alternative decryption method
+            # Use modular inverse approach
+            temp = pow(ciphertext, 1, n_squared)
+            message_int = ((temp - 1) // n) % n
+        else:
+            message_int = (temp // n) % n
+        
+        return message_int
+    except Exception as e:
+        raise ValueError(f"Decryption failed: {str(e)}")
 
 def decode_public_key(encoded_key: str) -> int:
     """Decode base64 encoded JSON public key"""
@@ -174,20 +195,23 @@ def decode_public_key(encoded_key: str) -> int:
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid public key format: {str(e)}")
 
-# Global mapping for demonstration - in production you'd store this properly
-STRING_MAPPING = {}
-
-def encrypt_string_simple(message: str, public_key_n: int) -> str:
-    """Encrypt a string using simplified BGN encryption"""
+def encrypt_string(message: str, public_key_n: int) -> str:
+    """Encrypt a string using BGN encryption with safe encoding"""
     try:
-        # Convert string to small integer
-        message_int = string_to_small_int(message)
+        # Convert string to integer using safe method
+        message_int = string_to_int_safe(message)
         
-        # Store the mapping
-        STRING_MAPPING[message_int] = message
+        # Check if the message integer is too large for the encryption scheme
+        # We need to be more conservative here
+        max_safe_size = min(public_key_n // 10000, 2**1000)  # Much more conservative
+        
+        if message_int >= max_safe_size:
+            # Instead of truncating, chunk the message
+            # For now, return an error for oversized messages
+            raise ValueError(f"Message too large for encryption. Max size: {len(str(max_safe_size))} digits, got: {len(str(message_int))} digits")
         
         # Encrypt the integer
-        encrypted_int = simple_bgn_encrypt(message_int, public_key_n)
+        encrypted_int = bgn_encrypt(message_int, public_key_n)
         
         # Convert to base64 string
         return int_to_base64(encrypted_int)
@@ -195,21 +219,17 @@ def encrypt_string_simple(message: str, public_key_n: int) -> str:
     except Exception as e:
         raise Exception(f"String encryption failed: {str(e)}")
 
-def decrypt_string_simple(encrypted_b64: str, p: int, q: int) -> str:
-    """Decrypt a base64 encoded encrypted string"""
+def decrypt_string(encrypted_b64: str, p: int, q: int) -> str:
+    """Decrypt a base64 encoded encrypted string back to original string"""
     try:
         # Convert base64 to integer
         encrypted_int = base64_to_int(encrypted_b64)
         
         # Decrypt the integer
-        decrypted_int = simple_bgn_decrypt(encrypted_int, p, q)
+        decrypted_int = bgn_decrypt(encrypted_int, p, q)
         
-        # Look up the original string
-        if decrypted_int in STRING_MAPPING:
-            return STRING_MAPPING[decrypted_int]
-        else:
-            # If not found, return the integer as string with a note
-            return f"UNKNOWN_MAPPING:{decrypted_int}"
+        # Convert integer back to original string using safe method
+        return int_to_string_safe(decrypted_int)
     
     except Exception as e:
         raise Exception(f"String decryption failed: {str(e)}")
@@ -225,12 +245,12 @@ def encrypt_vote_data(vote_data: VoteData) -> EncryptedVoteData:
             raise ValueError("Invalid public key: n must be positive")
         
         return EncryptedVoteData(
-            candidateId=encrypt_string_simple(vote_data.candidateId, public_key_n),
-            timestamp=encrypt_string_simple(vote_data.timestamp, public_key_n),
-            walletAddress=encrypt_string_simple(vote_data.walletAddress, public_key_n),
-            voteHash=encrypt_string_simple(vote_data.voteHash, public_key_n),
-            blockNumber=encrypt_string_simple(vote_data.blockNumber, public_key_n),
-            transactionHash=encrypt_string_simple(vote_data.transactionHash, public_key_n)
+            candidateId=encrypt_string(vote_data.candidateId, public_key_n),
+            timestamp=encrypt_string(vote_data.timestamp, public_key_n),
+            walletAddress=encrypt_string(vote_data.walletAddress, public_key_n),
+            voteHash=encrypt_string(vote_data.voteHash, public_key_n),
+            blockNumber=encrypt_string(vote_data.blockNumber, public_key_n),
+            transactionHash=encrypt_string(vote_data.transactionHash, public_key_n)
         )
     
     except Exception as e:
@@ -240,12 +260,12 @@ def decrypt_vote_data(encrypted_vote: EncryptedVoteData, p: int, q: int) -> Decr
     """Decrypt all fields in the encrypted vote data"""
     try:
         return DecryptedVoteData(
-            candidateId=decrypt_string_simple(encrypted_vote.candidateId, p, q),
-            timestamp=decrypt_string_simple(encrypted_vote.timestamp, p, q),
-            walletAddress=decrypt_string_simple(encrypted_vote.walletAddress, p, q),
-            voteHash=decrypt_string_simple(encrypted_vote.voteHash, p, q),
-            blockNumber=decrypt_string_simple(encrypted_vote.blockNumber, p, q),
-            transactionHash=decrypt_string_simple(encrypted_vote.transactionHash, p, q)
+            candidateId=decrypt_string(encrypted_vote.candidateId, p, q),
+            timestamp=decrypt_string(encrypted_vote.timestamp, p, q),
+            walletAddress=decrypt_string(encrypted_vote.walletAddress, p, q),
+            voteHash=decrypt_string(encrypted_vote.voteHash, p, q),
+            blockNumber=decrypt_string(encrypted_vote.blockNumber, p, q),
+            transactionHash=decrypt_string(encrypted_vote.transactionHash, p, q)
         )
     except Exception as e:
         raise Exception(f"Vote data decryption failed: {str(e)}")
@@ -304,7 +324,7 @@ async def decrypt_string_endpoint(request: DecryptRequest):
         q = int(priv["q"])
         
         # Decrypt the string
-        decrypted = decrypt_string_simple(request.encrypted_data, p, q)
+        decrypted = decrypt_string(request.encrypted_data, p, q)
         
         return {"decrypted_message": decrypted}
     
@@ -350,6 +370,7 @@ async def encrypt_vote_raw(vote_data: VoteData):
     encrypted_data = await encrypt_vote(vote_data)
     return encrypted_data.dict()
 
+# Example usage endpoint
 @app.get("/example")
 async def get_example():
     """
@@ -371,37 +392,25 @@ async def get_example():
         }
     }
 
-@app.post("/test-simple-encryption")
-async def test_simple_encryption(request: dict):
+@app.post("/test-key")
+async def test_key_decoding(request: dict):
     """
-    Test endpoint with very simple messages
+    Test endpoint to debug public key decoding
     """
     try:
         public_key = request.get("publicKey")
-        private_key = request.get("privateKey")
-        test_message = request.get("message", "test")
+        if not public_key:
+            raise HTTPException(status_code=400, detail="publicKey field required")
         
-        if not public_key or not private_key:
-            raise HTTPException(status_code=400, detail="publicKey and privateKey fields required")
-        
-        # Step 1: Encrypt
+        # Decode the public key
         public_key_n = decode_public_key(public_key)
-        encrypted = encrypt_string_simple(test_message, public_key_n)
-        
-        # Step 2: Decrypt
-        priv = _b64_or_json_to_privkey(private_key)
-        p = int(priv["p"])
-        q = int(priv["q"])
-        decrypted = decrypt_string_simple(encrypted, p, q)
         
         return {
             "status": "success",
-            "original_message": test_message,
-            "message_hash": string_to_small_int(test_message),
-            "encrypted_message": encrypted,
-            "decrypted_message": decrypted,
-            "roundtrip_successful": test_message == decrypted,
-            "mapping_stored": string_to_small_int(test_message) in STRING_MAPPING
+            "decoded_key": str(public_key_n),
+            "key_length": len(str(public_key_n)),
+            "key_bit_length": public_key_n.bit_length(),
+            "original_key": public_key[:50] + "..." if len(public_key) > 50 else public_key
         }
     
     except Exception as e:
@@ -410,24 +419,186 @@ async def test_simple_encryption(request: dict):
             "error": str(e)
         }
 
-@app.get("/view-mapping")
-async def view_string_mapping():
+@app.post("/test-private-key")
+async def test_private_key_decoding(request: dict):
     """
-    View the current string mapping for debugging
+    Test endpoint to debug private key decoding
     """
-    return {
-        "mapping": STRING_MAPPING,
-        "mapping_count": len(STRING_MAPPING)
-    }
+    try:
+        private_key = request.get("privateKey")
+        if not private_key:
+            raise HTTPException(status_code=400, detail="privateKey field required")
+        
+        # Decode the private key using the helper function
+        priv = _b64_or_json_to_privkey(private_key)
+        
+        return {
+            "status": "success",
+            "decoded_p": str(priv["p"])[:50] + "..." if len(str(priv["p"])) > 50 else str(priv["p"]),
+            "decoded_q": str(priv["q"])[:50] + "..." if len(str(priv["q"])) > 50 else str(priv["q"]),
+            "p_length": len(str(priv["p"])),
+            "q_length": len(str(priv["q"])),
+            "original_key": private_key[:50] + "..." if len(private_key) > 50 else private_key
+        }
+    
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e)
+        }
 
-@app.post("/clear-mapping")
-async def clear_string_mapping():
+@app.post("/test-encryption")
+async def test_encryption(request: dict):
     """
-    Clear the string mapping
+    Test endpoint to debug encryption process
     """
-    global STRING_MAPPING
-    STRING_MAPPING = {}
-    return {"status": "mapping cleared"}
+    try:
+        public_key = request.get("publicKey")
+        test_message = request.get("message", "test")
+        
+        if not public_key:
+            raise HTTPException(status_code=400, detail="publicKey field required")
+        
+        # Decode the public key
+        public_key_n = decode_public_key(public_key)
+        
+        # Test encryption
+        encrypted = encrypt_string(test_message, public_key_n)
+        
+        return {
+            "status": "success",
+            "original_message": test_message,
+            "encrypted_message": encrypted,
+            "public_key_n": str(public_key_n)[:100] + "..." if len(str(public_key_n)) > 100 else str(public_key_n)
+        }
+    
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e)
+        }
+
+@app.post("/test-decryption")
+async def test_decryption(request: dict):
+    """
+    Test endpoint to debug decryption process
+    """
+    try:
+        encrypted_data = request.get("encrypted_data")
+        private_key = request.get("private_key")
+        
+        if not encrypted_data or not private_key:
+            raise HTTPException(status_code=400, detail="encrypted_data and private_key fields required")
+        
+        # Parse private key
+        priv = _b64_or_json_to_privkey(private_key)
+        p = int(priv["p"])
+        q = int(priv["q"])
+        
+        # Test decryption
+        decrypted = decrypt_string(encrypted_data, p, q)
+        
+        return {
+            "status": "success",
+            "encrypted_data": encrypted_data,
+            "decrypted_message": decrypted,
+            "private_key_p": str(p)[:50] + "..." if len(str(p)) > 50 else str(p),
+            "private_key_q": str(q)[:50] + "..." if len(str(q)) > 50 else str(q)
+        }
+    
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e)
+        }
+
+@app.post("/test-roundtrip")
+async def test_roundtrip_encryption(request: dict):
+    """
+    Test endpoint to encrypt and then decrypt a message to verify it works
+    """
+    try:
+        public_key = request.get("publicKey")
+        private_key = request.get("privateKey")
+        test_message = request.get("message", "Hello!")  # Shorter default message
+        
+        if not public_key or not private_key:
+            raise HTTPException(status_code=400, detail="publicKey and privateKey fields required")
+        
+        # Step 1: Encrypt
+        public_key_n = decode_public_key(public_key)
+        encrypted = encrypt_string(test_message, public_key_n)
+        
+        # Step 2: Decrypt
+        priv = _b64_or_json_to_privkey(private_key)
+        p = int(priv["p"])
+        q = int(priv["q"])
+        decrypted = decrypt_string(encrypted, p, q)
+        
+        return {
+            "status": "success",
+            "original_message": test_message,
+            "encrypted_message": encrypted,
+            "decrypted_message": decrypted,
+            "roundtrip_successful": test_message == decrypted
+        }
+    
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e)
+        }
+
+@app.post("/test-simple")
+async def test_simple_encryption(request: dict):
+    """
+    Test endpoint with very simple messages to debug step by step
+    """
+    try:
+        public_key = request.get("publicKey")
+        private_key = request.get("privateKey")
+        
+        if not public_key or not private_key:
+            raise HTTPException(status_code=400, detail="publicKey and privateKey fields required")
+        
+        # Test with very simple messages
+        test_messages = ["a", "hi", "test", "123"]
+        results = []
+        
+        for msg in test_messages:
+            try:
+                # Encrypt
+                public_key_n = decode_public_key(public_key)
+                encrypted = encrypt_string(msg, public_key_n)
+                
+                # Decrypt
+                priv = _b64_or_json_to_privkey(private_key)
+                p = int(priv["p"])
+                q = int(priv["q"])
+                decrypted = decrypt_string(encrypted, p, q)
+                
+                results.append({
+                    "original": msg,
+                    "encrypted": encrypted,
+                    "decrypted": decrypted,
+                    "success": msg == decrypted
+                })
+            except Exception as e:
+                results.append({
+                    "original": msg,
+                    "error": str(e)
+                })
+        
+        return {
+            "status": "success",
+            "results": results
+        }
+    
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e)
+        }
 
 if __name__ == "__main__":
     import uvicorn

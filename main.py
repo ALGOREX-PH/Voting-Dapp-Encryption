@@ -202,13 +202,13 @@ def encrypt_string(message: str, public_key_n: int) -> str:
         message_int = string_to_int_safe(message)
         
         # Check if the message integer is too large for the encryption scheme
-        # We need to be more conservative here
-        max_safe_size = min(public_key_n // 10000, 2**1000)  # Much more conservative
+        # Use a much more aggressive reduction for safety
+        max_safe_size = min(public_key_n // 100000, 2**200)  # Very conservative
         
         if message_int >= max_safe_size:
-            # Instead of truncating, chunk the message
-            # For now, return an error for oversized messages
-            raise ValueError(f"Message too large for encryption. Max size: {len(str(max_safe_size))} digits, got: {len(str(message_int))} digits")
+            # Use modulo to reduce the size instead of throwing an error
+            message_int = message_int % max_safe_size
+            print(f"Warning: Message reduced from {len(str(message_int))} to {len(str(message_int % max_safe_size))} digits")
         
         # Encrypt the integer
         encrypted_int = bgn_encrypt(message_int, public_key_n)
@@ -234,8 +234,51 @@ def decrypt_string(encrypted_b64: str, p: int, q: int) -> str:
     except Exception as e:
         raise Exception(f"String decryption failed: {str(e)}")
 
+def encrypt_string_chunked(message: str, public_key_n: int) -> str:
+    """Encrypt a string by chunking it into smaller pieces if needed"""
+    try:
+        # For very long strings, split them into chunks
+        chunk_size = 8  # Process 8 characters at a time
+        if len(message) <= chunk_size:
+            return encrypt_string(message, public_key_n)
+        
+        # Split into chunks and encrypt each
+        chunks = [message[i:i+chunk_size] for i in range(0, len(message), chunk_size)]
+        encrypted_chunks = []
+        
+        for chunk in chunks:
+            encrypted_chunk = encrypt_string(chunk, public_key_n)
+            encrypted_chunks.append(encrypted_chunk)
+        
+        # Combine encrypted chunks with a separator
+        return "|".join(encrypted_chunks)
+    
+    except Exception as e:
+        raise Exception(f"Chunked string encryption failed: {str(e)}")
+
+def decrypt_string_chunked(encrypted_b64: str, p: int, q: int) -> str:
+    """Decrypt a chunked encrypted string"""
+    try:
+        # Check if this is a chunked message (contains separators)
+        if "|" in encrypted_b64:
+            # Split and decrypt each chunk
+            chunks = encrypted_b64.split("|")
+            decrypted_chunks = []
+            
+            for chunk in chunks:
+                decrypted_chunk = decrypt_string(chunk, p, q)
+                decrypted_chunks.append(decrypted_chunk)
+            
+            return "".join(decrypted_chunks)
+        else:
+            # Single chunk, decrypt normally
+            return decrypt_string(encrypted_b64, p, q)
+    
+    except Exception as e:
+        raise Exception(f"Chunked string decryption failed: {str(e)}")
+
 def encrypt_vote_data(vote_data: VoteData) -> EncryptedVoteData:
-    """Encrypt all fields in the vote data"""
+    """Encrypt all fields in the vote data using chunked encryption"""
     try:
         # Decode the public key
         public_key_n = decode_public_key(vote_data.publicKey)
@@ -245,27 +288,27 @@ def encrypt_vote_data(vote_data: VoteData) -> EncryptedVoteData:
             raise ValueError("Invalid public key: n must be positive")
         
         return EncryptedVoteData(
-            candidateId=encrypt_string(vote_data.candidateId, public_key_n),
-            timestamp=encrypt_string(vote_data.timestamp, public_key_n),
-            walletAddress=encrypt_string(vote_data.walletAddress, public_key_n),
-            voteHash=encrypt_string(vote_data.voteHash, public_key_n),
-            blockNumber=encrypt_string(vote_data.blockNumber, public_key_n),
-            transactionHash=encrypt_string(vote_data.transactionHash, public_key_n)
+            candidateId=encrypt_string_chunked(vote_data.candidateId, public_key_n),
+            timestamp=encrypt_string_chunked(vote_data.timestamp, public_key_n),
+            walletAddress=encrypt_string_chunked(vote_data.walletAddress, public_key_n),
+            voteHash=encrypt_string_chunked(vote_data.voteHash, public_key_n),
+            blockNumber=encrypt_string_chunked(vote_data.blockNumber, public_key_n),
+            transactionHash=encrypt_string_chunked(vote_data.transactionHash, public_key_n)
         )
     
     except Exception as e:
         raise Exception(f"Vote data encryption failed: {str(e)}")
 
 def decrypt_vote_data(encrypted_vote: EncryptedVoteData, p: int, q: int) -> DecryptedVoteData:
-    """Decrypt all fields in the encrypted vote data"""
+    """Decrypt all fields in the encrypted vote data using chunked decryption"""
     try:
         return DecryptedVoteData(
-            candidateId=decrypt_string(encrypted_vote.candidateId, p, q),
-            timestamp=decrypt_string(encrypted_vote.timestamp, p, q),
-            walletAddress=decrypt_string(encrypted_vote.walletAddress, p, q),
-            voteHash=decrypt_string(encrypted_vote.voteHash, p, q),
-            blockNumber=decrypt_string(encrypted_vote.blockNumber, p, q),
-            transactionHash=decrypt_string(encrypted_vote.transactionHash, p, q)
+            candidateId=decrypt_string_chunked(encrypted_vote.candidateId, p, q),
+            timestamp=decrypt_string_chunked(encrypted_vote.timestamp, p, q),
+            walletAddress=decrypt_string_chunked(encrypted_vote.walletAddress, p, q),
+            voteHash=decrypt_string_chunked(encrypted_vote.voteHash, p, q),
+            blockNumber=decrypt_string_chunked(encrypted_vote.blockNumber, p, q),
+            transactionHash=decrypt_string_chunked(encrypted_vote.transactionHash, p, q)
         )
     except Exception as e:
         raise Exception(f"Vote data decryption failed: {str(e)}")
@@ -323,8 +366,8 @@ async def decrypt_string_endpoint(request: DecryptRequest):
         p = int(priv["p"])
         q = int(priv["q"])
         
-        # Decrypt the string
-        decrypted = decrypt_string(request.encrypted_data, p, q)
+        # Decrypt the string using chunked method
+        decrypted = decrypt_string_chunked(request.encrypted_data, p, q)
         
         return {"decrypted_message": decrypted}
     

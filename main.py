@@ -1,3 +1,4 @@
+
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, validator
 from typing import Dict, Any, Union
@@ -92,13 +93,24 @@ def _str_to_bool(raw: str | bool | None, default=True) -> bool:
         return raw
     return raw.lower() in {"true", "1", "yes", "y", "t"}
 
-# BGN Encryption Functions
+# BGN Encryption Functions - FIXED VERSION
 def string_to_int(s: str) -> int:
-    """Convert string to integer using hash function for consistent mapping"""
-    # Use SHA-256 to convert string to a large integer
-    hash_object = hashlib.sha256(s.encode('utf-8'))
-    hex_dig = hash_object.hexdigest()
-    return int(hex_dig, 16)
+    """Convert string to integer using reversible encoding (instead of hash)"""
+    if not s:
+        return 0
+    bytes_data = s.encode('utf-8')
+    return int.from_bytes(bytes_data, byteorder='big')
+
+def int_to_string(num: int) -> str:
+    """Convert integer back to original string"""
+    if num == 0:
+        return ""
+    try:
+        byte_length = (num.bit_length() + 7) // 8
+        bytes_data = num.to_bytes(byte_length, byteorder='big')
+        return bytes_data.decode('utf-8')
+    except Exception as e:
+        raise ValueError(f"Failed to convert integer to string: {str(e)}")
 
 def int_to_base64(num: int) -> str:
     """Convert integer to base64 string"""
@@ -175,15 +187,19 @@ def decode_public_key(encoded_key: str) -> int:
         raise HTTPException(status_code=400, detail=f"Invalid public key format: {str(e)}")
 
 def encrypt_string(message: str, public_key_n: int) -> str:
-    """Encrypt a string using BGN encryption"""
+    """Encrypt a string using BGN encryption with reversible encoding"""
     try:
-        # Convert string to integer
+        # Convert string to integer (reversible)
         message_int = string_to_int(message)
         
-        # Reduce message size to prevent overflow
-        # Take modulo of a smaller number to ensure it fits in our encryption scheme
-        max_message_size = public_key_n // 1000  # Arbitrary safety factor
-        message_int = message_int % max_message_size
+        # Check if message is too large for the key
+        max_message_size = public_key_n // 1000  # Safety factor
+        if message_int >= max_message_size:
+            # For very long strings, we need to handle this differently
+            # For now, we'll truncate the message to fit
+            # In production, you might want to chunk large messages
+            message_int = message_int % max_message_size
+            print(f"Warning: Message truncated due to size. Original: {len(message)} chars")
         
         # Encrypt the integer
         encrypted_int = bgn_encrypt(message_int, public_key_n)
@@ -195,7 +211,7 @@ def encrypt_string(message: str, public_key_n: int) -> str:
         raise Exception(f"String encryption failed: {str(e)}")
 
 def decrypt_string(encrypted_b64: str, p: int, q: int) -> str:
-    """Decrypt a base64 encoded encrypted string"""
+    """Decrypt a base64 encoded encrypted string back to original string"""
     try:
         # Convert base64 to integer
         encrypted_int = base64_to_int(encrypted_b64)
@@ -203,14 +219,8 @@ def decrypt_string(encrypted_b64: str, p: int, q: int) -> str:
         # Decrypt the integer
         decrypted_int = bgn_decrypt(encrypted_int, p, q)
         
-        # For string decryption, we need to reverse the hash mapping
-        # This is challenging since hash functions are one-way
-        # For demonstration, we'll return the decrypted integer as string
-        # In practice, you'd need to store the original mapping or use a different approach
-        
-        # Convert back to string (this is a simplified approach)
-        # In reality, reversing a hash is not feasible
-        return str(decrypted_int)
+        # Convert integer back to original string using reversible method
+        return int_to_string(decrypted_int)
     
     except Exception as e:
         raise Exception(f"String decryption failed: {str(e)}")
@@ -485,6 +495,43 @@ async def test_decryption(request: dict):
             "decrypted_message": decrypted,
             "private_key_p": str(p)[:50] + "..." if len(str(p)) > 50 else str(p),
             "private_key_q": str(q)[:50] + "..." if len(str(q)) > 50 else str(q)
+        }
+    
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e)
+        }
+
+@app.post("/test-roundtrip")
+async def test_roundtrip_encryption(request: dict):
+    """
+    Test endpoint to encrypt and then decrypt a message to verify it works
+    """
+    try:
+        public_key = request.get("publicKey")
+        private_key = request.get("privateKey")
+        test_message = request.get("message", "Hello World!")
+        
+        if not public_key or not private_key:
+            raise HTTPException(status_code=400, detail="publicKey and privateKey fields required")
+        
+        # Step 1: Encrypt
+        public_key_n = decode_public_key(public_key)
+        encrypted = encrypt_string(test_message, public_key_n)
+        
+        # Step 2: Decrypt
+        priv = _b64_or_json_to_privkey(private_key)
+        p = int(priv["p"])
+        q = int(priv["q"])
+        decrypted = decrypt_string(encrypted, p, q)
+        
+        return {
+            "status": "success",
+            "original_message": test_message,
+            "encrypted_message": encrypted,
+            "decrypted_message": decrypted,
+            "roundtrip_successful": test_message == decrypted
         }
     
     except Exception as e:

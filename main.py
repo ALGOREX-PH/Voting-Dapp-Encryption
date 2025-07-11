@@ -1,6 +1,6 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from typing import Dict, Any
+from fastapi import FastAPI, HTTPException, Form, Body
+from pydantic import BaseModel, Field, validator
+from typing import Dict, Any, Union
 import json
 import base64
 import hashlib
@@ -40,6 +40,53 @@ class EncryptedVoteData(BaseModel):
     blockNumber: str
     transactionHash: str
 
+class DecryptRequest(BaseModel):
+    encrypted_data: str = Field(..., description="Base64 encoded encrypted data")
+    private_key: Union[Dict[str, str], str] = Field(
+        ..., description="{'p': ..., 'q': ...} or Base64-encoded JSON"
+    )
+
+class DecryptResponse(BaseModel):
+    decrypted_message: str
+
+class DecryptVoteRequest(BaseModel):
+    encrypted_vote_data: EncryptedVoteData
+    private_key: Union[Dict[str, str], str] = Field(
+        ..., description="{'p': ..., 'q': ...} or Base64-encoded JSON"
+    )
+
+class DecryptedVoteData(BaseModel):
+    candidateId: str
+    timestamp: str
+    walletAddress: str
+    voteHash: str
+    blockNumber: str
+    transactionHash: str
+
+# Helper functions
+def _b64_or_json_to_privkey(raw: Union[str, Dict]) -> Dict[str, str]:
+    """Parse private key from Base64 or JSON format"""
+    if isinstance(raw, dict):
+        return raw
+    try:
+        decoded = base64.b64decode(raw).decode()
+        return json.loads(decoded)
+    except Exception:
+        try:
+            return json.loads(raw)
+        except Exception:
+            raise HTTPException(
+                422, "private_key must be Base64-encoded or JSON with fields 'p' and 'q'"
+            )
+
+def _str_to_bool(raw: str | bool | None, default=True) -> bool:
+    """Convert string to boolean"""
+    if raw is None:
+        return default
+    if isinstance(raw, bool):
+        return raw
+    return raw.lower() in {"true", "1", "yes", "y", "t"}
+
 # BGN Encryption Functions
 def string_to_int(s: str) -> int:
     """Convert string to integer using hash function for consistent mapping"""
@@ -58,6 +105,14 @@ def int_to_base64(num: int) -> str:
     num_bytes = num.to_bytes(byte_length, byteorder='big')
     return base64.b64encode(num_bytes).decode('utf-8')
 
+def base64_to_int(b64_str: str) -> int:
+    """Convert base64 string back to integer"""
+    try:
+        decoded_bytes = base64.b64decode(b64_str)
+        return int.from_bytes(decoded_bytes, byteorder='big')
+    except Exception as e:
+        raise ValueError(f"Failed to decode base64 string: {str(e)}")
+
 def bgn_encrypt(message_int: int, n: int) -> int:
     """
     Simplified BGN-style encryption
@@ -75,6 +130,32 @@ def bgn_encrypt(message_int: int, n: int) -> int:
     encrypted = ((1 + message_int * n) * pow(r, n, n_squared)) % n_squared
     
     return encrypted
+
+def bgn_decrypt(ciphertext: int, p: int, q: int) -> int:
+    """
+    Simplified BGN-style decryption
+    This is a basic implementation for the simplified encryption above
+    """
+    n = p * q
+    n_squared = n * n
+    
+    # For our simplified BGN: c = (1 + m*n) * r^n mod n^2
+    # To decrypt: m = ((c mod n^2) - 1) / n mod n
+    try:
+        # Compute (c - 1) / n mod n
+        # This works for our simplified scheme
+        temp = (ciphertext - 1) % n_squared
+        if temp % n != 0:
+            # Try alternative decryption method
+            # Use modular inverse approach
+            temp = pow(ciphertext, 1, n_squared)
+            message_int = ((temp - 1) // n) % n
+        else:
+            message_int = (temp // n) % n
+        
+        return message_int
+    except Exception as e:
+        raise ValueError(f"Decryption failed: {str(e)}")
 
 def decode_public_key(encoded_key: str) -> int:
     """Decode base64 encoded JSON public key"""
@@ -108,6 +189,27 @@ def encrypt_string(message: str, public_key_n: int) -> str:
     except Exception as e:
         raise Exception(f"String encryption failed: {str(e)}")
 
+def decrypt_string(encrypted_b64: str, p: int, q: int) -> str:
+    """Decrypt a base64 encoded encrypted string"""
+    try:
+        # Convert base64 to integer
+        encrypted_int = base64_to_int(encrypted_b64)
+        
+        # Decrypt the integer
+        decrypted_int = bgn_decrypt(encrypted_int, p, q)
+        
+        # For string decryption, we need to reverse the hash mapping
+        # This is challenging since hash functions are one-way
+        # For demonstration, we'll return the decrypted integer as string
+        # In practice, you'd need to store the original mapping or use a different approach
+        
+        # Convert back to string (this is a simplified approach)
+        # In reality, reversing a hash is not feasible
+        return str(decrypted_int)
+    
+    except Exception as e:
+        raise Exception(f"String decryption failed: {str(e)}")
+
 def encrypt_vote_data(vote_data: VoteData) -> EncryptedVoteData:
     """Encrypt all fields in the vote data"""
     try:
@@ -129,6 +231,20 @@ def encrypt_vote_data(vote_data: VoteData) -> EncryptedVoteData:
     
     except Exception as e:
         raise Exception(f"Vote data encryption failed: {str(e)}")
+
+def decrypt_vote_data(encrypted_vote: EncryptedVoteData, p: int, q: int) -> DecryptedVoteData:
+    """Decrypt all fields in the encrypted vote data"""
+    try:
+        return DecryptedVoteData(
+            candidateId=decrypt_string(encrypted_vote.candidateId, p, q),
+            timestamp=decrypt_string(encrypted_vote.timestamp, p, q),
+            walletAddress=decrypt_string(encrypted_vote.walletAddress, p, q),
+            voteHash=decrypt_string(encrypted_vote.voteHash, p, q),
+            blockNumber=decrypt_string(encrypted_vote.blockNumber, p, q),
+            transactionHash=decrypt_string(encrypted_vote.transactionHash, p, q)
+        )
+    except Exception as e:
+        raise Exception(f"Vote data decryption failed: {str(e)}")
 
 # API Endpoints
 @app.get("/")
@@ -171,6 +287,74 @@ async def encrypt_vote(vote_data: VoteData):
             detail=f"Encryption failed: {str(e)}"
         )
 
+@app.post("/decrypt-string", response_model=DecryptResponse)
+async def decrypt_string_endpoint(
+    # Form-data fields
+    encrypted_data: str | None = Form(None),
+    private_key: str | None = Form(None),
+    # JSON body
+    body: DecryptRequest | None = Body(None),
+):
+    """
+    Decrypt a single encrypted string using BGN decryption
+    Accepts either form-data or JSON body
+    """
+    try:
+        # Decide which path (form-data vs JSON)
+        if body is None:
+            if encrypted_data is None or private_key is None:
+                raise HTTPException(422, "form-data must include encrypted_data and private_key")
+            req = DecryptRequest(
+                encrypted_data=encrypted_data,
+                private_key=_b64_or_json_to_privkey(private_key)
+            )
+        else:
+            req = body
+        
+        # Parse private key
+        priv = _b64_or_json_to_privkey(req.private_key)
+        p = int(priv["p"])
+        q = int(priv["q"])
+        
+        # Decrypt the string
+        decrypted = decrypt_string(req.encrypted_data, p, q)
+        
+        return {"decrypted_message": decrypted}
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Decryption error: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Decryption failed: {str(e)}"
+        )
+
+@app.post("/decrypt-vote", response_model=DecryptedVoteData)
+async def decrypt_vote(request: DecryptVoteRequest):
+    """
+    Decrypt entire vote data using BGN decryption
+    """
+    try:
+        # Parse private key
+        priv = _b64_or_json_to_privkey(request.private_key)
+        p = int(priv["p"])
+        q = int(priv["q"])
+        
+        # Decrypt the vote data
+        decrypted_data = decrypt_vote_data(request.encrypted_vote_data, p, q)
+        
+        return decrypted_data
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Vote decryption error: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Vote decryption failed: {str(e)}"
+        )
+
 @app.post("/encrypt-vote-raw")
 async def encrypt_vote_raw(vote_data: VoteData):
     """
@@ -194,6 +378,10 @@ async def get_example():
             "blockNumber": "0",
             "transactionHash": "0x3a9aa3fb330361635e9106a4b1f83682a7d9e37b9ef5d79e63235fa81ac5be24",
             "publicKey": "eyJuIjogIjMxMjEzNTQxMjczNTQ2MjIyOTU2ODgwNDMyNjk0NzYwNDkxMzkyNzgyNjgxODg1MzMwNjM2ODAxNjA2MTA0MzUzMzY5MTEyNTc3MDU1Mjc0Mjg5NDY1NDQ4NDc0ODYxMzU2NzYwNjE4NjYyMTE2OTMzNTc1NDc4NDc1MTE3NTIyNzA3NjQ1NTM3NDU3NjAzNzEwNTcwMTgwNzAxIn0"
+        },
+        "example_decrypt_request": {
+            "encrypted_data": "base64_encoded_encrypted_string",
+            "private_key": "eyJwIjogIjEyMzQ1NiIsICJxIjogIjc4OTEwMSJ9"
         }
     }
 
@@ -247,6 +435,40 @@ async def test_encryption(request: dict):
             "original_message": test_message,
             "encrypted_message": encrypted,
             "public_key_n": str(public_key_n)[:100] + "..." if len(str(public_key_n)) > 100 else str(public_key_n)
+        }
+    
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e)
+        }
+
+@app.post("/test-decryption")
+async def test_decryption(request: dict):
+    """
+    Test endpoint to debug decryption process
+    """
+    try:
+        encrypted_data = request.get("encrypted_data")
+        private_key = request.get("private_key")
+        
+        if not encrypted_data or not private_key:
+            raise HTTPException(status_code=400, detail="encrypted_data and private_key fields required")
+        
+        # Parse private key
+        priv = _b64_or_json_to_privkey(private_key)
+        p = int(priv["p"])
+        q = int(priv["q"])
+        
+        # Test decryption
+        decrypted = decrypt_string(encrypted_data, p, q)
+        
+        return {
+            "status": "success",
+            "encrypted_data": encrypted_data,
+            "decrypted_message": decrypted,
+            "private_key_p": str(p)[:50] + "..." if len(str(p)) > 50 else str(p),
+            "private_key_q": str(q)[:50] + "..." if len(str(q)) > 50 else str(q)
         }
     
     except Exception as e:

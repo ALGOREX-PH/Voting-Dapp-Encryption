@@ -592,8 +592,117 @@ async def test_roundtrip_encryption(request: dict):
             "error": str(e)
         }
 
-@app.post("/test-simple")
-async def test_simple_encryption(request: dict):
+# Your actual decryption function (compatible with your system)
+def decrypt_value(encrypted_int: int, p: int, q: int) -> int:
+    """
+    Compatible decrypt_value function matching your system
+    Replace this with your actual decryption logic
+    """
+    n = p * q
+    
+    # This is a basic implementation - adjust based on your actual decrypt_value function
+    try:
+        # Simple modular arithmetic decryption (adjust as needed)
+        decrypted = encrypted_int % n
+        return decrypted
+    except Exception as e:
+        raise ValueError(f"Decryption failed: {str(e)}")
+
+def decrypt_string_compatible(encrypted_b64: str, p: int, q: int) -> str:
+    """
+    Decrypt using your exact process:
+    encrypted_salary = int(base64.b64decode(value).decode())
+    decrypted_salary_cents = decrypt_value(encrypted_salary, p, q)
+    """
+    try:
+        # Follow your exact process
+        encrypted_int = int(base64.b64decode(encrypted_b64).decode())
+        decrypted_int = decrypt_value(encrypted_int, p, q)
+        return str(decrypted_int)
+    except Exception as e:
+        raise Exception(f"Compatible decryption failed: {str(e)}")
+
+@app.post("/decrypt-string-compatible", response_model=DecryptResponse)
+async def decrypt_string_compatible_endpoint(request: DecryptRequest):
+    """
+    Decrypt using your exact system process
+    """
+    try:
+        # Parse private key
+        priv = _b64_or_json_to_privkey(request.private_key)
+        p = int(priv["p"])
+        q = int(priv["q"])
+        
+        # Decrypt using your exact process
+        decrypted = decrypt_string_compatible(request.encrypted_data, p, q)
+        
+        return {"decrypted_message": decrypted}
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Compatible decryption error: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Compatible decryption failed: {str(e)}"
+        )
+
+@app.post("/test-your-process")
+async def test_your_exact_process(request: dict):
+    """
+    Test endpoint that exactly follows your decryption process
+    """
+    try:
+        encrypted_data = request.get("encrypted_data")
+        private_key = request.get("private_key")
+        
+        if not encrypted_data or not private_key:
+            raise HTTPException(status_code=400, detail="encrypted_data and private_key required")
+        
+        # Parse private key
+        priv = _b64_or_json_to_privkey(private_key)
+        p = int(priv["p"])
+        q = int(priv["q"])
+        
+        # Step 1: Your exact process
+        # encrypted_salary = int(base64.b64decode(ws[f'G{row}'].value).decode())
+        try:
+            encrypted_int = int(base64.b64decode(encrypted_data).decode())
+            print(f"Successfully decoded to int: {encrypted_int}")
+        except Exception as decode_err:
+            return {
+                "status": "decode_error",
+                "error": f"Could not decode base64 to int: {str(decode_err)}",
+                "encrypted_data_sample": encrypted_data[:50] + "..." if len(encrypted_data) > 50 else encrypted_data
+            }
+        
+        # Step 2: Your decryption
+        # decrypted_salary_cents = decrypt_value(encrypted_salary, p, q)
+        try:
+            decrypted_int = decrypt_value(encrypted_int, p, q)
+            print(f"Successfully decrypted to: {decrypted_int}")
+        except Exception as decrypt_err:
+            return {
+                "status": "decrypt_error", 
+                "error": f"Decryption failed: {str(decrypt_err)}",
+                "encrypted_int": encrypted_int
+            }
+        
+        return {
+            "status": "success",
+            "encrypted_data": encrypted_data,
+            "encrypted_int": encrypted_int,
+            "decrypted_int": decrypted_int,
+            "decrypted_message": str(decrypted_int),
+            "p_info": f"{str(p)[:20]}... (length: {len(str(p))})",
+            "q_info": f"{str(q)[:20]}... (length: {len(str(q))})"
+        }
+    
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e)
+        }
     """
     Test endpoint with very simple messages to debug step by step
     """

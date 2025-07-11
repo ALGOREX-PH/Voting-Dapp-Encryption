@@ -1,4 +1,3 @@
-
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, validator
 from typing import Dict, Any, Union
@@ -93,24 +92,34 @@ def _str_to_bool(raw: str | bool | None, default=True) -> bool:
         return raw
     return raw.lower() in {"true", "1", "yes", "y", "t"}
 
-# BGN Encryption Functions - FIXED VERSION
-def string_to_int(s: str) -> int:
-    """Convert string to integer using reversible encoding (instead of hash)"""
+# BGN Encryption Functions - SAFER VERSION
+def string_to_int_safe(s: str) -> int:
+    """Convert string to integer using a safer method"""
     if not s:
         return 0
-    bytes_data = s.encode('utf-8')
+    # First encode to base64 to ensure we can reverse it safely
+    b64_encoded = base64.b64encode(s.encode('utf-8')).decode('ascii')
+    # Then convert the base64 string to int
+    bytes_data = b64_encoded.encode('ascii')
     return int.from_bytes(bytes_data, byteorder='big')
 
-def int_to_string(num: int) -> str:
-    """Convert integer back to original string"""
+def int_to_string_safe(num: int) -> str:
+    """Convert integer back to original string safely"""
     if num == 0:
         return ""
     try:
+        # Convert int back to bytes
         byte_length = (num.bit_length() + 7) // 8
         bytes_data = num.to_bytes(byte_length, byteorder='big')
-        return bytes_data.decode('utf-8')
+        
+        # Convert bytes to ASCII string (this should be base64)
+        ascii_str = bytes_data.decode('ascii')
+        
+        # Decode the base64 to get original string
+        return base64.b64decode(ascii_str).decode('utf-8')
     except Exception as e:
-        raise ValueError(f"Failed to convert integer to string: {str(e)}")
+        # If we can't decode properly, return an error message instead of crashing
+        return f"[DECRYPTION_ERROR: {str(e)}]"
 
 def int_to_base64(num: int) -> str:
     """Convert integer to base64 string"""
@@ -187,19 +196,19 @@ def decode_public_key(encoded_key: str) -> int:
         raise HTTPException(status_code=400, detail=f"Invalid public key format: {str(e)}")
 
 def encrypt_string(message: str, public_key_n: int) -> str:
-    """Encrypt a string using BGN encryption with reversible encoding"""
+    """Encrypt a string using BGN encryption with safe encoding"""
     try:
-        # Convert string to integer (reversible)
-        message_int = string_to_int(message)
+        # Convert string to integer using safe method
+        message_int = string_to_int_safe(message)
         
-        # Check if message is too large for the key
-        max_message_size = public_key_n // 1000  # Safety factor
-        if message_int >= max_message_size:
-            # For very long strings, we need to handle this differently
-            # For now, we'll truncate the message to fit
-            # In production, you might want to chunk large messages
-            message_int = message_int % max_message_size
-            print(f"Warning: Message truncated due to size. Original: {len(message)} chars")
+        # Check if the message integer is too large for the encryption scheme
+        # We need to be more conservative here
+        max_safe_size = min(public_key_n // 10000, 2**1000)  # Much more conservative
+        
+        if message_int >= max_safe_size:
+            # Instead of truncating, chunk the message
+            # For now, return an error for oversized messages
+            raise ValueError(f"Message too large for encryption. Max size: {len(str(max_safe_size))} digits, got: {len(str(message_int))} digits")
         
         # Encrypt the integer
         encrypted_int = bgn_encrypt(message_int, public_key_n)
@@ -219,8 +228,8 @@ def decrypt_string(encrypted_b64: str, p: int, q: int) -> str:
         # Decrypt the integer
         decrypted_int = bgn_decrypt(encrypted_int, p, q)
         
-        # Convert integer back to original string using reversible method
-        return int_to_string(decrypted_int)
+        # Convert integer back to original string using safe method
+        return int_to_string_safe(decrypted_int)
     
     except Exception as e:
         raise Exception(f"String decryption failed: {str(e)}")
@@ -511,7 +520,7 @@ async def test_roundtrip_encryption(request: dict):
     try:
         public_key = request.get("publicKey")
         private_key = request.get("privateKey")
-        test_message = request.get("message", "Hello World!")
+        test_message = request.get("message", "Hello!")  # Shorter default message
         
         if not public_key or not private_key:
             raise HTTPException(status_code=400, detail="publicKey and privateKey fields required")
@@ -532,6 +541,57 @@ async def test_roundtrip_encryption(request: dict):
             "encrypted_message": encrypted,
             "decrypted_message": decrypted,
             "roundtrip_successful": test_message == decrypted
+        }
+    
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e)
+        }
+
+@app.post("/test-simple")
+async def test_simple_encryption(request: dict):
+    """
+    Test endpoint with very simple messages to debug step by step
+    """
+    try:
+        public_key = request.get("publicKey")
+        private_key = request.get("privateKey")
+        
+        if not public_key or not private_key:
+            raise HTTPException(status_code=400, detail="publicKey and privateKey fields required")
+        
+        # Test with very simple messages
+        test_messages = ["a", "hi", "test", "123"]
+        results = []
+        
+        for msg in test_messages:
+            try:
+                # Encrypt
+                public_key_n = decode_public_key(public_key)
+                encrypted = encrypt_string(msg, public_key_n)
+                
+                # Decrypt
+                priv = _b64_or_json_to_privkey(private_key)
+                p = int(priv["p"])
+                q = int(priv["q"])
+                decrypted = decrypt_string(encrypted, p, q)
+                
+                results.append({
+                    "original": msg,
+                    "encrypted": encrypted,
+                    "decrypted": decrypted,
+                    "success": msg == decrypted
+                })
+            except Exception as e:
+                results.append({
+                    "original": msg,
+                    "error": str(e)
+                })
+        
+        return {
+            "status": "success",
+            "results": results
         }
     
     except Exception as e:

@@ -478,6 +478,79 @@ async def test_key_decoding(request: dict):
         }
     
     except Exception as e:
+@app.post("/debug-encrypted-data")
+async def debug_encrypted_data(request: dict):
+    """
+    Debug endpoint to understand your encrypted data format
+    """
+    try:
+        encrypted_data = request.get("encrypted_data")
+        if not encrypted_data:
+            return {"error": "encrypted_data field required"}
+        
+        debug_info = {
+            "original_data": encrypted_data,
+            "data_length": len(encrypted_data),
+            "first_50_chars": encrypted_data[:50],
+            "last_50_chars": encrypted_data[-50:] if len(encrypted_data) > 50 else encrypted_data
+        }
+        
+        # Try to decode as base64
+        try:
+            decoded_bytes = base64.b64decode(encrypted_data)
+            debug_info["base64_decode_success"] = True
+            debug_info["decoded_bytes_length"] = len(decoded_bytes)
+            debug_info["decoded_bytes_sample"] = list(decoded_bytes[:20])  # First 20 bytes as numbers
+            
+            # Try to decode bytes as UTF-8
+            try:
+                decoded_string = decoded_bytes.decode('utf-8')
+                debug_info["utf8_decode_success"] = True
+                debug_info["decoded_string"] = decoded_string
+                debug_info["decoded_string_length"] = len(decoded_string)
+                
+                # Try to convert to int
+                try:
+                    decoded_int = int(decoded_string)
+                    debug_info["int_conversion_success"] = True
+                    debug_info["decoded_int"] = decoded_int
+                    debug_info["int_bit_length"] = decoded_int.bit_length()
+                except ValueError as int_err:
+                    debug_info["int_conversion_success"] = False
+                    debug_info["int_conversion_error"] = str(int_err)
+                    
+            except UnicodeDecodeError as utf8_err:
+                debug_info["utf8_decode_success"] = False
+                debug_info["utf8_decode_error"] = str(utf8_err)
+                
+                # Try other encodings
+                for encoding in ['latin-1', 'ascii', 'cp1252']:
+                    try:
+                        alt_decoded = decoded_bytes.decode(encoding)
+                        debug_info[f"{encoding}_decode_success"] = True
+                        debug_info[f"{encoding}_decoded"] = alt_decoded[:100]  # First 100 chars
+                        break
+                    except:
+                        debug_info[f"{encoding}_decode_success"] = False
+                        
+        except Exception as b64_err:
+            debug_info["base64_decode_success"] = False
+            debug_info["base64_decode_error"] = str(b64_err)
+        
+        # Try to interpret as different formats
+        # Maybe it's already a number encoded as base64?
+        try:
+            # Try treating the whole thing as base64-encoded integer bytes
+            decoded_bytes = base64.b64decode(encrypted_data)
+            if len(decoded_bytes) <= 8:  # Small enough to be an integer
+                as_int = int.from_bytes(decoded_bytes, byteorder='big')
+                debug_info["as_direct_int"] = as_int
+        except:
+            pass
+            
+        return debug_info
+        
+    except Exception as e:
         return {
             "status": "error",
             "error": str(e)
@@ -631,15 +704,46 @@ def decrypt_value(encrypted_int: int, p: int, q: int) -> int:
 
 def decrypt_string_compatible(encrypted_b64: str, p: int, q: int) -> str:
     """
-    Decrypt using your exact process:
-    encrypted_salary = int(base64.b64decode(value).decode())
-    decrypted_salary_cents = decrypt_value(encrypted_salary, p, q)
+    Decrypt using your exact process with multiple format attempts
     """
     try:
-        # Follow your exact process
-        encrypted_int = int(base64.b64decode(encrypted_b64).decode())
-        decrypted_int = decrypt_value(encrypted_int, p, q)
-        return str(decrypted_int)
+        # Method 1: Try your exact process
+        try:
+            encrypted_int = int(base64.b64decode(encrypted_b64).decode('utf-8'))
+            decrypted_int = decrypt_value(encrypted_int, p, q)
+            return str(decrypted_int)
+        except UnicodeDecodeError:
+            pass  # Try other methods
+        
+        # Method 2: Try with latin-1 encoding
+        try:
+            encrypted_int = int(base64.b64decode(encrypted_b64).decode('latin-1'))
+            decrypted_int = decrypt_value(encrypted_int, p, q)
+            return str(decrypted_int)
+        except:
+            pass
+            
+        # Method 3: Try interpreting decoded bytes directly as integer
+        try:
+            decoded_bytes = base64.b64decode(encrypted_b64)
+            encrypted_int = int.from_bytes(decoded_bytes, byteorder='big')
+            decrypted_int = decrypt_value(encrypted_int, p, q)
+            return str(decrypted_int)
+        except:
+            pass
+            
+        # Method 4: Try interpreting decoded bytes as little-endian integer
+        try:
+            decoded_bytes = base64.b64decode(encrypted_b64)
+            encrypted_int = int.from_bytes(decoded_bytes, byteorder='little')
+            decrypted_int = decrypt_value(encrypted_int, p, q)
+            return str(decrypted_int)
+        except:
+            pass
+        
+        # If all methods fail, return debug info
+        return f"[ALL_METHODS_FAILED: Use /debug-encrypted-data to analyze format]"
+        
     except Exception as e:
         raise Exception(f"Compatible decryption failed: {str(e)}")
 

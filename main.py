@@ -67,13 +67,18 @@ class DecryptedVoteData(BaseModel):
 def _b64_or_json_to_privkey(raw: Union[str, Dict]) -> Dict[str, str]:
     """Parse private key from Base64 or JSON format"""
     if isinstance(raw, dict):
-        return raw
+        # Ensure values are strings for consistency
+        return {k: str(v) for k, v in raw.items()}
     try:
         decoded = base64.b64decode(raw).decode()
-        return json.loads(decoded)
+        parsed = json.loads(decoded)
+        # Ensure values are strings for consistency
+        return {k: str(v) for k, v in parsed.items()}
     except Exception:
         try:
-            return json.loads(raw)
+            parsed = json.loads(raw)
+            # Ensure values are strings for consistency
+            return {k: str(v) for k, v in parsed.items()}
         except Exception:
             raise HTTPException(
                 422, "private_key must be Base64-encoded or JSON with fields 'p' and 'q'"
@@ -387,6 +392,34 @@ async def test_key_decoding(request: dict):
             "key_length": len(str(public_key_n)),
             "key_bit_length": public_key_n.bit_length(),
             "original_key": public_key[:50] + "..." if len(public_key) > 50 else public_key
+        }
+    
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e)
+        }
+
+@app.post("/test-private-key")
+async def test_private_key_decoding(request: dict):
+    """
+    Test endpoint to debug private key decoding
+    """
+    try:
+        private_key = request.get("privateKey")
+        if not private_key:
+            raise HTTPException(status_code=400, detail="privateKey field required")
+        
+        # Decode the private key using the helper function
+        priv = _b64_or_json_to_privkey(private_key)
+        
+        return {
+            "status": "success",
+            "decoded_p": str(priv["p"])[:50] + "..." if len(str(priv["p"])) > 50 else str(priv["p"]),
+            "decoded_q": str(priv["q"])[:50] + "..." if len(str(priv["q"])) > 50 else str(priv["q"]),
+            "p_length": len(str(priv["p"])),
+            "q_length": len(str(priv["q"])),
+            "original_key": private_key[:50] + "..." if len(private_key) > 50 else private_key
         }
     
     except Exception as e:

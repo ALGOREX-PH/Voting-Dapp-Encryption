@@ -46,40 +46,51 @@ def decode_public_key(encoded_key: str) -> int:
 
 def encrypt_string(message: str, public_key_n: int) -> str:
     """Encrypt a string using BGN encryption"""
-    # Convert string to character codes
-    char_encoded = [ord(c) for c in message]
-    
-    encrypted_chars = []
-    
-    # Encrypt each character
-    for char_code in char_encoded:
-        # Encrypt the character code
-        encrypted_value = encrypt_value(char_code, public_key_n)
+    try:
+        # Convert string to character codes
+        char_encoded = [ord(c) for c in message]
         
-        # Convert to bytes and encode in base64
-        encrypted_bytes = encrypted_value.to_bytes(
-            (encrypted_value.bit_length() + 7) // 8, 
-            byteorder='big'
-        )
-        encrypted_b64 = base64.b64encode(encrypted_bytes).decode('utf-8')
-        encrypted_chars.append(encrypted_b64)
+        encrypted_chars = []
+        
+        # Encrypt each character
+        for char_code in char_encoded:
+            # Encrypt the character code
+            encrypted_value = encrypt_value(char_code, public_key_n)
+            
+            # Convert to bytes and encode in base64
+            # Handle very large numbers by calculating byte length properly
+            if encrypted_value == 0:
+                encrypted_bytes = b'\x00'
+            else:
+                byte_length = (encrypted_value.bit_length() + 7) // 8
+                encrypted_bytes = encrypted_value.to_bytes(byte_length, byteorder='big')
+            
+            encrypted_b64 = base64.b64encode(encrypted_bytes).decode('utf-8')
+            encrypted_chars.append(encrypted_b64)
+        
+        # Join all encrypted characters with a delimiter
+        return "|".join(encrypted_chars)
     
-    # Join all encrypted characters with a delimiter
-    return "|".join(encrypted_chars)
+    except Exception as e:
+        raise Exception(f"String encryption failed: {str(e)}")
 
 def encrypt_vote_data(vote_data: VoteData) -> EncryptedVoteData:
     """Encrypt all fields in the vote data"""
-    # Decode the public key
-    public_key_n = decode_public_key(vote_data.publicKey)
+    try:
+        # Decode the public key
+        public_key_n = decode_public_key(vote_data.publicKey)
+        
+        return EncryptedVoteData(
+            candidateId=encrypt_string(vote_data.candidateId, public_key_n),
+            timestamp=encrypt_string(vote_data.timestamp, public_key_n),
+            walletAddress=encrypt_string(vote_data.walletAddress, public_key_n),
+            voteHash=encrypt_string(vote_data.voteHash, public_key_n),
+            blockNumber=encrypt_string(vote_data.blockNumber, public_key_n),
+            transactionHash=encrypt_string(vote_data.transactionHash, public_key_n)
+        )
     
-    return EncryptedVoteData(
-        candidateId=encrypt_string(vote_data.candidateId, public_key_n),
-        timestamp=encrypt_string(vote_data.timestamp, public_key_n),
-        walletAddress=encrypt_string(vote_data.walletAddress, public_key_n),
-        voteHash=encrypt_string(vote_data.voteHash, public_key_n),
-        blockNumber=encrypt_string(vote_data.blockNumber, public_key_n),
-        transactionHash=encrypt_string(vote_data.transactionHash, public_key_n)
-    )
+    except Exception as e:
+        raise Exception(f"Vote data encryption failed: {str(e)}")
 
 # API Endpoints
 @app.get("/")
@@ -96,11 +107,15 @@ async def encrypt_vote(vote_data: VoteData):
     Encrypt vote data using BGN encryption
     """
     try:
+        # Debug: log the public key for troubleshooting
+        print(f"Received public key: {vote_data.publicKey[:50]}...")
+        
         # Encrypt the vote data using the provided public key
         encrypted_data = encrypt_vote_data(vote_data)
         return encrypted_data
     
     except Exception as e:
+        print(f"Encryption error: {str(e)}")  # Server-side logging
         raise HTTPException(
             status_code=500, 
             detail=f"Encryption failed: {str(e)}"
@@ -131,6 +146,32 @@ async def get_example():
             "publicKey": "eyJuIjogIjMxMjEzNTQxMjczNTQ2MjIyOTU2ODgwNDMyNjk0NzYwNDkxMzkyNzgyNjgxODg1MzMwNjM2ODAxNjA2MTA0MzUzMzY5MTEyNTc3MDU1Mjc0Mjg5NDY1NDQ4NDc0ODYxMzU2NzYwNjE4NjYyMTE2OTMzNTc1NDc4NDc1MTE3NTIyNzA3NjQ1NTM3NDU3NjAzNzEwNTcwMTgwNzAxIn0"
         }
     }
+
+@app.post("/test-key")
+async def test_key_decoding(request: dict):
+    """
+    Test endpoint to debug public key decoding
+    """
+    try:
+        public_key = request.get("publicKey")
+        if not public_key:
+            raise HTTPException(status_code=400, detail="publicKey field required")
+        
+        # Decode the public key
+        public_key_n = decode_public_key(public_key)
+        
+        return {
+            "status": "success",
+            "decoded_key": str(public_key_n),
+            "key_length": len(str(public_key_n)),
+            "original_key": public_key[:50] + "..." if len(public_key) > 50 else public_key
+        }
+    
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e)
+        }
 
 if __name__ == "__main__":
     import uvicorn

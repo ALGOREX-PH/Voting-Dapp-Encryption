@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Form, Body
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, validator
 from typing import Dict, Any, Union
 import json
@@ -288,36 +288,19 @@ async def encrypt_vote(vote_data: VoteData):
         )
 
 @app.post("/decrypt-string", response_model=DecryptResponse)
-async def decrypt_string_endpoint(
-    # Form-data fields
-    encrypted_data: str | None = Form(None),
-    private_key: str | None = Form(None),
-    # JSON body
-    body: DecryptRequest | None = Body(None),
-):
+async def decrypt_string_endpoint(request: DecryptRequest):
     """
     Decrypt a single encrypted string using BGN decryption
-    Accepts either form-data or JSON body
+    Accepts JSON body only
     """
     try:
-        # Decide which path (form-data vs JSON)
-        if body is None:
-            if encrypted_data is None or private_key is None:
-                raise HTTPException(422, "form-data must include encrypted_data and private_key")
-            req = DecryptRequest(
-                encrypted_data=encrypted_data,
-                private_key=_b64_or_json_to_privkey(private_key)
-            )
-        else:
-            req = body
-        
         # Parse private key
-        priv = _b64_or_json_to_privkey(req.private_key)
+        priv = _b64_or_json_to_privkey(request.private_key)
         p = int(priv["p"])
         q = int(priv["q"])
         
         # Decrypt the string
-        decrypted = decrypt_string(req.encrypted_data, p, q)
+        decrypted = decrypt_string(request.encrypted_data, p, q)
         
         return {"decrypted_message": decrypted}
     

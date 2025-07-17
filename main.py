@@ -20,6 +20,15 @@ class VoteData(BaseModel):
     blockNumber: str
     transactionHash: str
 
+class VoteDataWithKey(BaseModel):
+    candidateId: str
+    timestamp: str
+    walletAddress: str
+    voteHash: str
+    blockNumber: str
+    transactionHash: str
+    public_key_n: int  # BGN public key n value
+
 class EncryptedVoteData(BaseModel):
     candidateId: List[str]
     timestamp: List[str]
@@ -134,10 +143,36 @@ async def generate_keys(request: KeyGenerationRequest):
         raise HTTPException(status_code=500, detail=f"Error generating keys: {str(e)}")
 
 @app.post("/encrypt-vote", response_model=EncryptionResponse)
-async def encrypt_vote_data(vote_data: VoteData):
-    """Encrypt vote data using BGN encryption"""
+async def encrypt_vote_data(vote_data: VoteDataWithKey):
+    """Encrypt vote data using BGN encryption with provided public key"""
     try:
-        # Load public key
+        # Use the provided public key
+        public_key_n = vote_data.public_key_n
+        
+        # Encrypt each field except transactionHash (keep as identifier)
+        encrypted_data = EncryptedVoteData(
+            candidateId=encrypt_string(vote_data.candidateId, public_key_n),
+            timestamp=encrypt_string(vote_data.timestamp, public_key_n),
+            walletAddress=encrypt_string(vote_data.walletAddress, public_key_n),
+            voteHash=encrypt_string(vote_data.voteHash, public_key_n),
+            blockNumber=encrypt_string(vote_data.blockNumber, public_key_n),
+            transactionHash=vote_data.transactionHash  # Keep unencrypted
+        )
+        
+        return EncryptionResponse(
+            success=True,
+            encrypted_data=encrypted_data,
+            message="Vote data encrypted successfully!"
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error encrypting vote data: {str(e)}")
+
+@app.post("/encrypt-vote-from-file", response_model=EncryptionResponse)
+async def encrypt_vote_data_from_file(vote_data: VoteData):
+    """Encrypt vote data using BGN encryption with key loaded from file"""
+    try:
+        # Load public key from file
         public_key_n = load_public_key('bgn_keys/bgn_public.pem')
         
         # Encrypt each field except transactionHash (keep as identifier)
@@ -161,7 +196,31 @@ async def encrypt_vote_data(vote_data: VoteData):
 
 @app.post("/encrypt-string")
 async def encrypt_string_endpoint(data: dict):
-    """Encrypt a single string using BGN encryption"""
+    """Encrypt a single string using BGN encryption with provided public key"""
+    try:
+        if "message" not in data:
+            raise HTTPException(status_code=400, detail="Missing 'message' field")
+        if "public_key_n" not in data:
+            raise HTTPException(status_code=400, detail="Missing 'public_key_n' field")
+        
+        message = data["message"]
+        public_key_n = data["public_key_n"]
+        
+        encrypted_message = encrypt_string(message, public_key_n)
+        
+        return {
+            "success": True,
+            "original_message": message,
+            "encrypted_message": encrypted_message,
+            "message_length": len(encrypted_message)
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error encrypting string: {str(e)}")
+
+@app.post("/encrypt-string-from-file")
+async def encrypt_string_from_file_endpoint(data: dict):
+    """Encrypt a single string using BGN encryption with key loaded from file"""
     try:
         if "message" not in data:
             raise HTTPException(status_code=400, detail="Missing 'message' field")
@@ -189,8 +248,10 @@ async def root():
         "version": "1.0.0",
         "endpoints": {
             "generate_keys": "/generate-keys",
-            "encrypt_vote": "/encrypt-vote",
-            "encrypt_string": "/encrypt-string"
+            "encrypt_vote": "/encrypt-vote (with public key in request)",
+            "encrypt_vote_from_file": "/encrypt-vote-from-file (loads key from file)",
+            "encrypt_string": "/encrypt-string (with public key in request)",
+            "encrypt_string_from_file": "/encrypt-string-from-file (loads key from file)"
         }
     }
 

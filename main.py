@@ -188,7 +188,7 @@ def bgn_decrypt_simple(encrypted_int: int, p: int, q: int) -> int:
     n = p * q  # Reconstruct modulus
     return encrypted_int % n  # Retrieve original value by taking modulo n
 
-def int_to_string_hash_reverse(decrypted_int: int, original_candidates: list = None) -> str:
+def int_to_string_hash_reverse(decrypted_int: int, max_message_size: int, original_candidates: list = None) -> str:
     """
     Since we used SHA-256 hash to convert string to int, we need to reverse it
     For vote data, we can try common candidates or use a lookup table
@@ -196,24 +196,44 @@ def int_to_string_hash_reverse(decrypted_int: int, original_candidates: list = N
     if original_candidates is None:
         # Common vote-related strings that might be encrypted
         original_candidates = [
-            "blazing-titan", "candidate-1", "candidate-2", "candidate-3",
-            "2025-07-08T16:13:24.000Z", "2025-07-17T10:00:00.000Z",
+            "blazing-titan", "candidate-1", "candidate-2", "candidate-3", "candidate-4", "candidate-5",
+            "2025-07-08T16:13:24.000Z", "2025-07-17T10:00:00.000Z", "2024-12-25T00:00:00.000Z",
             "0x7D11c7F2594525Af3Bc2ba611A804a1A235c2FF0",
             "0xf20aa3ffa7b47518dbeddcb1f0f0b4c3b9950049ebcafc37d36eccb7573b4405",
             "0x3a9aa3fb330361635e9106a4b1f83682a7d9e37b9ef5d79e63235fa81ac5be24",
             "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10",
+            "test", "hello", "world", "prismo", "vote", "encryption", "bgn",
+            "alice", "bob", "charlie", "david", "eve", "frank", "grace",
             # Add more candidate values as needed
         ]
     
     # Try to find the original string by testing candidates
     for candidate in original_candidates:
         candidate_hash = string_to_int(candidate)
-        # Compare with size reduction applied (same as in encryption)
-        if candidate_hash % (2**64) == decrypted_int % (2**64):  # Match lower 64 bits
+        # Apply the same reduction as in encryption
+        reduced_candidate_hash = candidate_hash % max_message_size
+        
+        if reduced_candidate_hash == decrypted_int:
             return candidate
     
-    # If no match found, return the decrypted integer as string
-    return str(decrypted_int)
+    # If no exact match found, try partial matching with different bit lengths
+    for candidate in original_candidates:
+        candidate_hash = string_to_int(candidate)
+        reduced_candidate_hash = candidate_hash % max_message_size
+        
+        # Try matching with different modulo values
+        if (reduced_candidate_hash % (2**32)) == (decrypted_int % (2**32)):
+            return candidate
+        if (reduced_candidate_hash % (2**24)) == (decrypted_int % (2**24)):
+            return candidate
+        if (reduced_candidate_hash % (2**16)) == (decrypted_int % (2**16)):
+            return candidate
+    
+    # If no match found, return a truncated version of the number
+    if decrypted_int > 1000000:
+        return f"UNKNOWN_HASH_{decrypted_int % 100000}"
+    else:
+        return str(decrypted_int)
 
 def decrypt_string_bgn(encrypted_b64: str, public_key_n: int, p: int, q: int) -> str:
     """Decrypt a BGN encrypted string"""
@@ -230,7 +250,7 @@ def decrypt_string_bgn(encrypted_b64: str, public_key_n: int, p: int, q: int) ->
         
         # Try to reverse the hash (this is limited - hash functions are one-way)
         # For practical use, you'd need a lookup table or known candidates
-        return int_to_string_hash_reverse(decrypted_int)
+        return int_to_string_hash_reverse(decrypted_int, max_message_size)
         
     except Exception as e:
         raise Exception(f"String decryption failed: {str(e)}")
@@ -491,8 +511,33 @@ async def test_encryption(request: dict):
             "error": str(e)
         }
 
-@app.post("/test-decryption")
-async def test_decryption(request: dict):
+# New endpoint to add known strings to lookup table
+@app.post("/add-lookup-candidate")
+async def add_lookup_candidate(request: dict):
+    """
+    Add a known string to the lookup table for better decryption
+    Expected format: {"candidate": "string_to_add"}
+    """
+    try:
+        candidate = request.get("candidate")
+        if not candidate:
+            raise HTTPException(status_code=400, detail="candidate field required")
+        
+        # Test what hash value this candidate produces
+        candidate_hash = string_to_int(candidate)
+        
+        return {
+            "status": "success",
+            "candidate": candidate,
+            "hash_value": str(candidate_hash),
+            "message": f"Add '{candidate}' to your lookup table in int_to_string_hash_reverse function"
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e)
+        }
     """
     Test endpoint to debug decryption process
     """

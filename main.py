@@ -81,6 +81,9 @@ class DecryptCharArrayResponse(BaseModel):
     decryptedMessage: str
     characterCount: int
 
+class DecryptTextResponse(BaseModel):
+    decryptedText: str
+
 # BGN Encryption Functions (Character-by-Character method from notebook)
 def encrypt_value_simple(m: int, n: int) -> int:
     """Simple BGN-style additive encryption (from your notebook)"""
@@ -291,27 +294,27 @@ def decrypt_string_bgn(encrypted_b64: str, public_key_n: int, p: int, q: int) ->
 
 def decrypt_character_by_character(encrypted_chars: list, p: int, q: int) -> str:
     """
-    Decrypt a list of encrypted characters (like in your BGN_ENCRYPT_TEXT_MESSAGE example)
-    This is for the character-by-character encryption method
+    Decrypt a list of encrypted characters (matching your notebook's encryption method)
     """
     decrypted_chars = []
+    n = p * q  # Reconstruct the public key modulus
     
     for encrypted_char_b64 in encrypted_chars:
         try:
             # Convert base64 to integer
             encrypted_int = base64_to_int(encrypted_char_b64)
             
-            # Decrypt using the simple method from your example
-            decrypted_int = encrypted_int % (p * q)
+            # Decrypt using modulo n (matching your notebook's encrypt_value method)
+            # Since encrypt_value(m, n) = m + randint(1, 9999999) * n
+            # We can recover m by taking modulo n
+            decrypted_char_code = encrypted_int % n
             
             # Convert back to character
-            if 0 <= decrypted_int <= 127:  # Valid ASCII range
-                decrypted_chars.append(chr(decrypted_int))
+            if 0 <= decrypted_char_code <= 127:  # Valid ASCII range
+                decrypted_chars.append(chr(decrypted_char_code))
             else:
-                # If outside ASCII range, it might be the encrypted value
-                # Try modulo operation to get original character
-                original_char_code = decrypted_int % 128
-                decrypted_chars.append(chr(original_char_code))
+                # If outside ASCII range, there might be an issue
+                decrypted_chars.append(f"[INVALID_CHAR_{decrypted_char_code}]")
                 
         except Exception as e:
             decrypted_chars.append(f"[ERROR: {str(e)}]")
@@ -429,36 +432,49 @@ async def decrypt_text(decrypt_request: DecryptTextRequest):
             detail=f"Text decryption failed: {str(e)}"
         )
 
-@app.post("/decrypt-character-array")
-async def decrypt_character_array(request: dict):
+# New Endpoints for Character-by-Character Encryption (matching your notebook)
+@app.post("/encrypt-text-chars", response_model=EncryptTextResponse)
+async def encrypt_text_chars(request: EncryptTextRequest):
     """
-    Decrypt an array of encrypted characters (like in BGN_ENCRYPT_TEXT_MESSAGE example)
-    Expected format: {
-        "encryptedChars": ["base64_char1", "base64_char2", ...],
-        "privateKey": "base64_encoded_private_key"
-    }
+    Encrypt text character by character (matching BGN_Encrypt_Text_Message.ipynb method)
     """
     try:
-        encrypted_chars = request.get("encryptedChars")
-        private_key = request.get("privateKey")
+        # Decode the public key
+        public_key_n = decode_public_key(request.publicKey)
         
-        if not encrypted_chars or not private_key:
-            raise HTTPException(
-                status_code=400, 
-                detail="encryptedChars and privateKey fields required"
-            )
+        # Encrypt character by character
+        encrypted_chars = encrypt_text_character_by_character(request.message, public_key_n)
         
+        return EncryptTextResponse(
+            encryptedChars=encrypted_chars,
+            characterCount=len(encrypted_chars)
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Character encryption error: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Character encryption failed: {str(e)}"
+        )
+
+@app.post("/decrypt-character-array", response_model=DecryptCharArrayResponse)
+async def decrypt_character_array_v2(request: DecryptCharArrayRequest):
+    """
+    Decrypt an array of encrypted characters (matching your notebook method)
+    """
+    try:
         # Decode private key
-        p, q = decode_private_key(private_key)
+        p, q = decode_private_key(request.privateKey)
         
         # Decrypt character by character
-        decrypted_message = decrypt_character_by_character(encrypted_chars, p, q)
+        decrypted_message = decrypt_character_by_character(request.encryptedChars, p, q)
         
-        return {
-            "status": "success",
-            "decryptedMessage": decrypted_message,
-            "characterCount": len(decrypted_message)
-        }
+        return DecryptCharArrayResponse(
+            decryptedMessage=decrypted_message,
+            characterCount=len(decrypted_message)
+        )
         
     except HTTPException:
         raise

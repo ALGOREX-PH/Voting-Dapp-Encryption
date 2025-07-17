@@ -37,6 +37,23 @@ class EncryptedVoteData(BaseModel):
     blockNumber: List[str]
     transactionHash: str  # Keep transaction hash unencrypted as identifier
 
+class DecryptedVoteData(BaseModel):
+    candidateId: str
+    timestamp: str
+    walletAddress: str
+    voteHash: str
+    blockNumber: str
+    transactionHash: str  # This remains unchanged
+
+class DecryptVoteRequest(BaseModel):
+    encrypted_data: EncryptedVoteData
+    private_key: str  # Base64-encoded JSON private key (contains p and q)
+
+class DecryptVoteResponse(BaseModel):
+    success: bool
+    decrypted_data: DecryptedVoteData
+    message: str
+
 class KeyGenerationRequest(BaseModel):
     bit_length: int = 256
 
@@ -60,6 +77,41 @@ def generate_bgn_keys(bit_length=256):
 def serialize_key(key):
     """Serialize key to base64 encoded JSON"""
     return base64.b64encode(json.dumps(key).encode('utf-8'))
+
+def decode_private_key(private_key_base64):
+    """Decode base64-encoded JSON private key to get p and q values"""
+    try:
+        # Decode base64 to get JSON string
+        json_string = base64.b64decode(private_key_base64).decode('utf-8')
+        # Parse JSON to get the key data
+        key_data = json.loads(json_string)
+        # Return the p and q values
+        return int(key_data['p']), int(key_data['q'])
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid private key format: {str(e)}")
+
+def decrypt_encrypted_list(encrypted_list, p, q):
+    """
+    Decrypt a list of base64-encoded encrypted values
+    Each encrypted value is a base64-encoded big-endian integer
+    """
+    n = p * q
+    decrypted_chars = []
+    
+    for encrypted_b64 in encrypted_list:
+        try:
+            # Decode base64 to get bytes
+            encrypted_bytes = base64.b64decode(encrypted_b64)
+            # Convert bytes to integer
+            encrypted_int = int.from_bytes(encrypted_bytes, byteorder='big')
+            # Decrypt by taking modulo n to get original character code
+            decrypted_char_code = encrypted_int % n
+            # Convert character code to character
+            decrypted_chars.append(chr(decrypted_char_code))
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Error decrypting value: {str(e)}")
+    
+    return ''.join(decrypted_chars)
 
 def decode_public_key(public_key_base64):
     """Decode base64-encoded JSON public key to get n value"""
@@ -153,6 +205,55 @@ async def generate_keys(request: KeyGenerationRequest):
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error generating keys: {str(e)}")
+
+@app.post("/decrypt-vote", response_model=DecryptVoteResponse)
+async def decrypt_vote_data(request: DecryptVoteRequest):
+    """Decrypt encrypted vote data using BGN decryption with provided private key"""
+    try:
+        # Decode the base64-encoded private key to get p and q values
+        p, q = decode_private_key(request.private_key)
+        
+        # Decrypt each field
+        decrypted_data = DecryptedVoteData(
+            candidateId=decrypt_encrypted_list(request.encrypted_data.candidateId, p, q),
+            timestamp=decrypt_encrypted_list(request.encrypted_data.timestamp, p, q),
+            walletAddress=decrypt_encrypted_list(request.encrypted_data.walletAddress, p, q),
+            voteHash=decrypt_encrypted_list(request.encrypted_data.voteHash, p, q),
+            blockNumber=decrypt_encrypted_list(request.encrypted_data.blockNumber, p, q),
+            transactionHash=request.encrypted_data.transactionHash  # Keep unchanged
+        )
+        
+        return DecryptVoteResponse(
+            success=True,
+            decrypted_data=decrypted_data,
+            message="Vote data decrypted successfully!"
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error decrypting vote data: {str(e)}")
+
+@app.post("/decrypt-string-simple")
+async def decrypt_string_simple(data: dict):
+    """Decrypt a single encrypted string list using BGN decryption with provided private key"""
+    try:
+        if "encrypted_message" not in data:
+            raise HTTPException(status_code=400, detail="Missing 'encrypted_message' field")
+        if "private_key" not in data:
+            raise HTTPException(status_code=400, detail="Missing 'private_key' field")
+        
+        encrypted_list = data["encrypted_message"]
+        p, q = decode_private_key(data["private_key"])
+        
+        decrypted_message = decrypt_encrypted_list(encrypted_list, p, q)
+        
+        return {
+            "success": True,
+            "decrypted_message": decrypted_message,
+            "original_length": len(encrypted_list)
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error decrypting string: {str(e)}")
 
 @app.post("/encrypt-vote", response_model=EncryptionResponse)
 async def encrypt_vote_data(vote_data: VoteDataWithKey):
@@ -261,8 +362,10 @@ async def root():
         "endpoints": {
             "generate_keys": "/generate-keys",
             "encrypt_vote": "/encrypt-vote (with public key in request)",
+            "decrypt_vote": "/decrypt-vote (with private key in request)",
             "encrypt_vote_from_file": "/encrypt-vote-from-file (loads key from file)",
             "encrypt_string": "/encrypt-string (with public key in request)",
+            "decrypt_string_simple": "/decrypt-string-simple (with private key in request)",
             "encrypt_string_from_file": "/encrypt-string-from-file (loads key from file)"
         }
     }

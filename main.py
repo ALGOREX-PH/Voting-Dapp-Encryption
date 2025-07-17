@@ -64,10 +64,44 @@ class DecryptTextRequest(BaseModel):
     publicKey: str
     privateKey: str
 
-class DecryptTextResponse(BaseModel):
-    decryptedText: str
+# New Pydantic models for character-by-character encryption
+class EncryptTextRequest(BaseModel):
+    message: str
+    publicKey: str
 
-# BGN Encryption Functions
+class EncryptTextResponse(BaseModel):
+    encryptedChars: list
+    characterCount: int
+
+class DecryptCharArrayRequest(BaseModel):
+    encryptedChars: list
+    privateKey: str
+
+class DecryptCharArrayResponse(BaseModel):
+    decryptedMessage: str
+    characterCount: int
+
+# BGN Encryption Functions (Character-by-Character method from notebook)
+def encrypt_value_simple(m: int, n: int) -> int:
+    """Simple BGN-style additive encryption (from your notebook)"""
+    return m + randint(1, 9999999) * n
+
+def encrypt_text_character_by_character(message: str, public_key_n: int) -> list:
+    """Encrypt text character by character (matching your notebook method)"""
+    char_encoded = [ord(c) for c in message]
+    encrypted_message = []
+    
+    for char_code in char_encoded:
+        # Encrypt using the simple method from your notebook
+        letter_encrypted_value = encrypt_value_simple(char_code, public_key_n)
+        # Convert to bytes and then base64
+        letter_bytes = letter_encrypted_value.to_bytes((letter_encrypted_value.bit_length() + 7) // 8, byteorder='big')
+        letter_encoded = base64.b64encode(letter_bytes).decode('utf-8')
+        encrypted_message.append(letter_encoded)
+    
+    return encrypted_message
+
+# BGN Encryption Functions (Hash-based method from main.py)
 def string_to_int(s: str) -> int:
     """Convert string to integer using hash function for consistent mapping"""
     # Use SHA-256 to convert string to a large integer

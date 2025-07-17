@@ -27,7 +27,7 @@ class VoteDataWithKey(BaseModel):
     voteHash: str
     blockNumber: str
     transactionHash: str
-    public_key_n: int  # BGN public key n value
+    public_key: str  # BGN public key (base64-encoded JSON)
 
 class EncryptedVoteData(BaseModel):
     candidateId: List[str]
@@ -60,6 +60,18 @@ def generate_bgn_keys(bit_length=256):
 def serialize_key(key):
     """Serialize key to base64 encoded JSON"""
     return base64.b64encode(json.dumps(key).encode('utf-8'))
+
+def decode_public_key(public_key_base64):
+    """Decode base64-encoded JSON public key to get n value"""
+    try:
+        # Decode base64 to get JSON string
+        json_string = base64.b64decode(public_key_base64).decode('utf-8')
+        # Parse JSON to get the key data
+        key_data = json.loads(json_string)
+        # Return the n value
+        return key_data['n']
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid public key format: {str(e)}")
 
 def load_public_key(filename):
     """Load public key from file"""
@@ -146,8 +158,8 @@ async def generate_keys(request: KeyGenerationRequest):
 async def encrypt_vote_data(vote_data: VoteDataWithKey):
     """Encrypt vote data using BGN encryption with provided public key"""
     try:
-        # Use the provided public key
-        public_key_n = vote_data.public_key_n
+        # Decode the base64-encoded public key to get n value
+        public_key_n = decode_public_key(vote_data.public_key)
         
         # Encrypt each field except transactionHash (keep as identifier)
         encrypted_data = EncryptedVoteData(
@@ -200,11 +212,11 @@ async def encrypt_string_endpoint(data: dict):
     try:
         if "message" not in data:
             raise HTTPException(status_code=400, detail="Missing 'message' field")
-        if "public_key_n" not in data:
-            raise HTTPException(status_code=400, detail="Missing 'public_key_n' field")
+        if "public_key" not in data:
+            raise HTTPException(status_code=400, detail="Missing 'public_key' field")
         
         message = data["message"]
-        public_key_n = data["public_key_n"]
+        public_key_n = decode_public_key(data["public_key"])
         
         encrypted_message = encrypt_string(message, public_key_n)
         

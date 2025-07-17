@@ -1,28 +1,17 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from pydantic import BaseModel
-from typing import Dict, Any
+from typing import Dict, List, Any
 import json
 import base64
-import hashlib
-from random import randint
 import os
-from fastapi.middleware.cors import CORSMiddleware
+from random import randint
+from sympy import randprime
+import uvicorn
+from datetime import datetime
 
-# Initialize FastAPI app
-app = FastAPI(title="BGN Vote Encryption API", version="1.0.0")
+app = FastAPI(title="BGN Encryption API", version="1.0.0")
 
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-    ],
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["*"],
-)
-
-# Pydantic models for request/response
+# Data models
 class VoteData(BaseModel):
     candidateId: str
     timestamp: str
@@ -30,600 +19,201 @@ class VoteData(BaseModel):
     voteHash: str
     blockNumber: str
     transactionHash: str
-    publicKey: str  # Base64 encoded JSON public key
 
 class EncryptedVoteData(BaseModel):
-    candidateId: str
-    timestamp: str
-    walletAddress: str
-    voteHash: str
-    blockNumber: str
-    transactionHash: str
+    candidateId: List[str]
+    timestamp: List[str]
+    walletAddress: List[str]
+    voteHash: List[str]
+    blockNumber: List[str]
+    transactionHash: str  # Keep transaction hash unencrypted as identifier
 
-# New Pydantic models for decryption
-class DecryptVoteData(BaseModel):
-    encryptedCandidateId: str
-    encryptedTimestamp: str
-    encryptedWalletAddress: str
-    encryptedVoteHash: str
-    encryptedBlockNumber: str
-    encryptedTransactionHash: str
-    publicKey: str  # Base64 encoded JSON public key
-    privateKey: str  # Base64 encoded JSON private key
+class KeyGenerationRequest(BaseModel):
+    bit_length: int = 256
 
-class DecryptedVoteData(BaseModel):
-    candidateId: str
-    timestamp: str
-    walletAddress: str
-    voteHash: str
-    blockNumber: str
-    transactionHash: str
-
-class DecryptTextRequest(BaseModel):
-    encryptedText: str  # Base64 encoded encrypted text
-    publicKey: str
-    privateKey: str
-
-# New Pydantic models for character-by-character encryption
-class EncryptTextRequest(BaseModel):
+class EncryptionResponse(BaseModel):
+    success: bool
+    encrypted_data: EncryptedVoteData
     message: str
-    publicKey: str
 
-class EncryptTextResponse(BaseModel):
-    encryptedChars: list
-    characterCount: int
+# BGN Key Generation Functions
+def generate_bgn_keys(bit_length=256):
+    """Generate BGN public and private keys"""
+    # Generate two large distinct primes
+    p = randprime(2**bit_length, 2**(bit_length+1))
+    q = randprime(2**bit_length, 2**(bit_length+1))
+    while q == p:  # Ensure distinct primes
+        q = randprime(2**bit_length, 2**(bit_length+1))
+    
+    n = p * q  # Modulus for encryption
+    return ({"n": n}, {"p": p, "q": q})
 
-class DecryptCharArrayRequest(BaseModel):
-    encryptedChars: list
-    privateKey: str
+def serialize_key(key):
+    """Serialize key to base64 encoded JSON"""
+    return base64.b64encode(json.dumps(key).encode('utf-8'))
 
-class DecryptCharArrayResponse(BaseModel):
-    decryptedMessage: str
-    characterCount: int
+def load_public_key(filename):
+    """Load public key from file"""
+    try:
+        with open(filename, 'rb') as f:
+            key_data = json.loads(base64.b64decode(f.read()).decode('utf-8'))
+            return key_data['n']
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Public key file {filename} not found")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error loading public key: {str(e)}")
 
-class DecryptTextResponse(BaseModel):
-    decryptedText: str
+def load_private_key(filename):
+    """Load private key from file"""
+    try:
+        with open(filename, 'rb') as f:
+            key_data = json.loads(base64.b64decode(f.read()).decode('utf-8'))
+            return key_data['p'], key_data['q']
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Private key file {filename} not found")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error loading private key: {str(e)}")
 
-# BGN Encryption Functions (Character-by-Character method from notebook)
-def encrypt_value_simple(m: int, n: int) -> int:
-    """Simple BGN-style additive encryption (from your notebook)"""
+def encrypt_value(m, n):
+    """BGN-style additive encryption"""
     return m + randint(1, 9999999) * n
 
-def encrypt_text_character_by_character(message: str, public_key_n: int) -> list:
-    """Encrypt text character by character (matching your notebook method)"""
+def encrypt_string(message, public_key_n):
+    """Encrypt a string using BGN encryption"""
+    # Convert string to character codes
     char_encoded = [ord(c) for c in message]
-    encrypted_message = []
     
+    encrypted_message = []
     for char_code in char_encoded:
-        # Encrypt using the simple method from your notebook
-        letter_encrypted_value = encrypt_value_simple(char_code, public_key_n)
-        # Convert to bytes and then base64
-        letter_bytes = letter_encrypted_value.to_bytes((letter_encrypted_value.bit_length() + 7) // 8, byteorder='big')
-        letter_encoded = base64.b64encode(letter_bytes).decode('utf-8')
-        encrypted_message.append(letter_encoded)
+        # Encrypt each character
+        letter_encrypted_value = encrypt_value(char_code, public_key_n)
+        
+        # Convert to bytes and encode as base64
+        letter_bytes = letter_encrypted_value.to_bytes(
+            (letter_encrypted_value.bit_length() + 7) // 8, 
+            byteorder='big'
+        )
+        letter_encoded = base64.b64encode(letter_bytes)
+        letter_encoded_str = letter_encoded.decode('utf-8')
+        encrypted_message.append(letter_encoded_str)
     
     return encrypted_message
 
-# BGN Encryption Functions (Hash-based method from main.py)
-def string_to_int(s: str) -> int:
-    """Convert string to integer using hash function for consistent mapping"""
-    # Use SHA-256 to convert string to a large integer
-    hash_object = hashlib.sha256(s.encode('utf-8'))
-    hex_dig = hash_object.hexdigest()
-    return int(hex_dig, 16)
-
-def int_to_base64(num: int) -> str:
-    """Convert integer to base64 string"""
-    if num == 0:
-        return base64.b64encode(b'\x00').decode('utf-8')
-    
-    # Calculate number of bytes needed
-    byte_length = (num.bit_length() + 7) // 8
-    num_bytes = num.to_bytes(byte_length, byteorder='big')
-    return base64.b64encode(num_bytes).decode('utf-8')
-
-def bgn_encrypt(message_int: int, n: int) -> int:
-    """
-    Simplified BGN-style encryption
-    E(m) = g^m * r^n mod n^2
-    For simplicity, we'll use a basic implementation
-    """
-    # Generate random value r
-    r = randint(2, n - 1)
-    
-    # Compute n^2
-    n_squared = n * n
-    
-    # Simplified BGN encryption: (1 + m*n) * r^n mod n^2
-    # This is a simplified version - full BGN requires bilinear groups
-    encrypted = ((1 + message_int * n) * pow(r, n, n_squared)) % n_squared
-    
-    return encrypted
-
-def decode_public_key(encoded_key: str) -> int:
-    """Decode base64 encoded JSON public key"""
+# API Endpoints
+@app.post("/generate-keys")
+async def generate_keys(request: KeyGenerationRequest):
+    """Generate BGN public and private keys"""
     try:
-        # Decode base64
-        decoded_bytes = base64.b64decode(encoded_key)
-        # Parse JSON
-        key_data = json.loads(decoded_bytes.decode('utf-8'))
-        # Extract 'n' value and convert to int
-        return int(key_data['n'])
+        # Create keys directory if it doesn't exist
+        os.makedirs('bgn_keys', exist_ok=True)
+        
+        # Generate keys
+        public_key, private_key = generate_bgn_keys(request.bit_length)
+        
+        # Save keys to files
+        with open('bgn_keys/bgn_public.pem', 'wb') as f:
+            f.write(serialize_key(public_key))
+        
+        with open('bgn_keys/bgn_private.pem', 'wb') as f:
+            f.write(serialize_key(private_key))
+        
+        # Verify keys
+        loaded_public = json.loads(base64.b64decode(serialize_key(public_key)).decode('utf-8'))
+        loaded_private = json.loads(base64.b64decode(serialize_key(private_key)).decode('utf-8'))
+        assert loaded_public['n'] == loaded_private['p'] * loaded_private['q']
+        
+        return {
+            "success": True,
+            "message": "BGN keys generated successfully!",
+            "public_key_file": "bgn_keys/bgn_public.pem",
+            "private_key_file": "bgn_keys/bgn_private.pem",
+            "public_key_n": public_key['n']
+        }
+        
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid public key format: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error generating keys: {str(e)}")
 
-def encrypt_string(message: str, public_key_n: int) -> str:
-    """Encrypt a string using BGN encryption"""
+@app.post("/encrypt-vote", response_model=EncryptionResponse)
+async def encrypt_vote_data(vote_data: VoteData):
+    """Encrypt vote data using BGN encryption"""
     try:
-        # Convert string to integer
-        message_int = string_to_int(message)
+        # Load public key
+        public_key_n = load_public_key('bgn_keys/bgn_public.pem')
         
-        # Reduce message size to prevent overflow
-        # Take modulo of a smaller number to ensure it fits in our encryption scheme
-        max_message_size = public_key_n // 1000  # Arbitrary safety factor
-        message_int = message_int % max_message_size
-        
-        # Encrypt the integer
-        encrypted_int = bgn_encrypt(message_int, public_key_n)
-        
-        # Convert to base64 string
-        return int_to_base64(encrypted_int)
-    
-    except Exception as e:
-        raise Exception(f"String encryption failed: {str(e)}")
-
-def encrypt_vote_data(vote_data: VoteData) -> EncryptedVoteData:
-    """Encrypt all fields in the vote data"""
-    try:
-        # Decode the public key
-        public_key_n = decode_public_key(vote_data.publicKey)
-        
-        # Validate public key
-        if public_key_n <= 0:
-            raise ValueError("Invalid public key: n must be positive")
-        
-        return EncryptedVoteData(
+        # Encrypt each field except transactionHash (keep as identifier)
+        encrypted_data = EncryptedVoteData(
             candidateId=encrypt_string(vote_data.candidateId, public_key_n),
             timestamp=encrypt_string(vote_data.timestamp, public_key_n),
             walletAddress=encrypt_string(vote_data.walletAddress, public_key_n),
             voteHash=encrypt_string(vote_data.voteHash, public_key_n),
             blockNumber=encrypt_string(vote_data.blockNumber, public_key_n),
-            transactionHash=encrypt_string(vote_data.transactionHash, public_key_n)
+            transactionHash=vote_data.transactionHash  # Keep unencrypted
         )
-    
+        
+        return EncryptionResponse(
+            success=True,
+            encrypted_data=encrypted_data,
+            message="Vote data encrypted successfully!"
+        )
+        
     except Exception as e:
-        raise Exception(f"Vote data encryption failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error encrypting vote data: {str(e)}")
 
-# BGN Decryption Functions
-def base64_to_int(b64_str: str) -> int:
-    """Convert base64 string back to integer"""
+@app.post("/encrypt-string")
+async def encrypt_string_endpoint(data: dict):
+    """Encrypt a single string using BGN encryption"""
     try:
-        decoded_bytes = base64.b64decode(b64_str)
-        if len(decoded_bytes) == 0:
-            return 0
-        return int.from_bytes(decoded_bytes, byteorder='big')
-    except Exception as e:
-        raise Exception(f"Base64 to int conversion failed: {str(e)}")
-
-def decode_private_key(encoded_key: str) -> tuple:
-    """Decode base64 encoded JSON private key"""
-    try:
-        # Decode base64
-        decoded_bytes = base64.b64decode(encoded_key)
-        # Parse JSON
-        key_data = json.loads(decoded_bytes.decode('utf-8'))
-        # Extract 'p' and 'q' values and convert to int
-        return int(key_data['p']), int(key_data['q'])
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid private key format: {str(e)}")
-
-def bgn_decrypt_simple(encrypted_int: int, p: int, q: int) -> int:
-    """
-    Simplified BGN-style decryption using private key primes
-    This matches the decryption method from your example
-    """
-    n = p * q  # Reconstruct modulus
-    return encrypted_int % n  # Retrieve original value by taking modulo n
-
-def int_to_string_hash_reverse(decrypted_int: int, max_message_size: int, original_candidates: list = None) -> str:
-    """
-    Since we used SHA-256 hash to convert string to int, we need to reverse it
-    For vote data, we can try common candidates or use a lookup table
-    """
-    if original_candidates is None:
-        # Common vote-related strings that might be encrypted
-        original_candidates = [
-            "blazing-titan", "candidate-1", "candidate-2", "candidate-3", "candidate-4", "candidate-5",
-            "2025-07-08T16:13:24.000Z", "2025-07-17T10:00:00.000Z", "2024-12-25T00:00:00.000Z",
-            "0x7D11c7F2594525Af3Bc2ba611A804a1A235c2FF0",
-            "0xf20aa3ffa7b47518dbeddcb1f0f0b4c3b9950049ebcafc37d36eccb7573b4405",
-            "0x3a9aa3fb330361635e9106a4b1f83682a7d9e37b9ef5d79e63235fa81ac5be24",
-            "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10",
-            "test", "hello", "world", "prismo", "vote", "encryption", "bgn",
-            "alice", "bob", "charlie", "david", "eve", "frank", "grace",
-            # Add more candidate values as needed
-        ]
-    
-    # Try to find the original string by testing candidates
-    for candidate in original_candidates:
-        candidate_hash = string_to_int(candidate)
-        # Apply the same reduction as in encryption
-        reduced_candidate_hash = candidate_hash % max_message_size
+        if "message" not in data:
+            raise HTTPException(status_code=400, detail="Missing 'message' field")
         
-        if reduced_candidate_hash == decrypted_int:
-            return candidate
-    
-    # If no exact match found, try partial matching with different bit lengths
-    for candidate in original_candidates:
-        candidate_hash = string_to_int(candidate)
-        reduced_candidate_hash = candidate_hash % max_message_size
+        message = data["message"]
+        public_key_n = load_public_key('bgn_keys/bgn_public.pem')
         
-        # Try matching with different modulo values
-        if (reduced_candidate_hash % (2**32)) == (decrypted_int % (2**32)):
-            return candidate
-        if (reduced_candidate_hash % (2**24)) == (decrypted_int % (2**24)):
-            return candidate
-        if (reduced_candidate_hash % (2**16)) == (decrypted_int % (2**16)):
-            return candidate
-    
-    # If no match found, return a truncated version of the number
-    if decrypted_int > 1000000:
-        return f"UNKNOWN_HASH_{decrypted_int % 100000}"
-    else:
-        return str(decrypted_int)
-
-def decrypt_string_bgn(encrypted_b64: str, public_key_n: int, p: int, q: int) -> str:
-    """Decrypt a BGN encrypted string"""
-    try:
-        # Convert base64 to integer
-        encrypted_int = base64_to_int(encrypted_b64)
+        encrypted_message = encrypt_string(message, public_key_n)
         
-        # Decrypt the integer
-        decrypted_int = bgn_decrypt_simple(encrypted_int, p, q)
-        
-        # For the simplified BGN used in main.py, we need to handle the message size reduction
-        max_message_size = public_key_n // 1000
-        decrypted_int = decrypted_int % max_message_size
-        
-        # Try to reverse the hash (this is limited - hash functions are one-way)
-        # For practical use, you'd need a lookup table or known candidates
-        return int_to_string_hash_reverse(decrypted_int, max_message_size)
+        return {
+            "success": True,
+            "original_message": message,
+            "encrypted_message": encrypted_message,
+            "message_length": len(encrypted_message)
+        }
         
     except Exception as e:
-        raise Exception(f"String decryption failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error encrypting string: {str(e)}")
 
-def decrypt_character_by_character(encrypted_chars: list, p: int, q: int) -> str:
-    """
-    Decrypt a list of encrypted characters (matching your notebook's encryption method)
-    """
-    decrypted_chars = []
-    n = p * q  # Reconstruct the public key modulus
-    
-    for encrypted_char_b64 in encrypted_chars:
-        try:
-            # Convert base64 to integer
-            encrypted_int = base64_to_int(encrypted_char_b64)
-            
-            # Decrypt using modulo n (matching your notebook's encrypt_value method)
-            # Since encrypt_value(m, n) = m + randint(1, 9999999) * n
-            # We can recover m by taking modulo n
-            decrypted_char_code = encrypted_int % n
-            
-            # Convert back to character
-            if 0 <= decrypted_char_code <= 127:  # Valid ASCII range
-                decrypted_chars.append(chr(decrypted_char_code))
-            else:
-                # If outside ASCII range, there might be an issue
-                decrypted_chars.append(f"[INVALID_CHAR_{decrypted_char_code}]")
-                
-        except Exception as e:
-            decrypted_chars.append(f"[ERROR: {str(e)}]")
-    
-    return ''.join(decrypted_chars)
-
-# API Endpoints
 @app.get("/")
 async def root():
-    return {"message": "BGN Vote Encryption API", "status": "running"}
-
-@app.get("/health")
-async def health_check():
-    return {"status": "healthy"}
-
-@app.post("/encrypt-vote", response_model=EncryptedVoteData)
-async def encrypt_vote(vote_data: VoteData):
-    """
-    Encrypt vote data using BGN encryption
-    """
-    try:
-        # Debug: log the public key for troubleshooting
-        print(f"Received public key: {vote_data.publicKey[:50]}...")
-        
-        # Decrypt and validate the public key first
-        try:
-            public_key_n = decode_public_key(vote_data.publicKey)
-            print(f"Decoded public key n: {str(public_key_n)[:50]}...")
-        except Exception as key_error:
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Invalid public key: {str(key_error)}"
-            )
-        
-        # Encrypt the vote data using the provided public key
-        encrypted_data = encrypt_vote_data(vote_data)
-        return encrypted_data
-    
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Encryption error: {str(e)}")  # Server-side logging
-        raise HTTPException(
-            status_code=500, 
-            detail=f"Encryption failed: {str(e)}"
-        )
-
-@app.post("/encrypt-vote-raw")
-async def encrypt_vote_raw(vote_data: VoteData):
-    """
-    Encrypt vote data and return as raw JSON (for debugging)
-    """
-    encrypted_data = await encrypt_vote(vote_data)
-    return encrypted_data.dict()
-
-# New Decryption Endpoints
-@app.post("/decrypt-vote", response_model=DecryptedVoteData)
-async def decrypt_vote(decrypt_data: DecryptVoteData):
-    """
-    Decrypt vote data using BGN decryption
-    """
-    try:
-        # Decode the keys
-        public_key_n = decode_public_key(decrypt_data.publicKey)
-        p, q = decode_private_key(decrypt_data.privateKey)
-        
-        # Validate keys
-        if public_key_n != p * q:
-            raise HTTPException(status_code=400, detail="Public and private keys don't match")
-        
-        # Decrypt all fields
-        return DecryptedVoteData(
-            candidateId=decrypt_string_bgn(decrypt_data.encryptedCandidateId, public_key_n, p, q),
-            timestamp=decrypt_string_bgn(decrypt_data.encryptedTimestamp, public_key_n, p, q),
-            walletAddress=decrypt_string_bgn(decrypt_data.encryptedWalletAddress, public_key_n, p, q),
-            voteHash=decrypt_string_bgn(decrypt_data.encryptedVoteHash, public_key_n, p, q),
-            blockNumber=decrypt_string_bgn(decrypt_data.encryptedBlockNumber, public_key_n, p, q),
-            transactionHash=decrypt_string_bgn(decrypt_data.encryptedTransactionHash, public_key_n, p, q)
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Decryption error: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Decryption failed: {str(e)}"
-        )
-
-@app.post("/decrypt-text", response_model=DecryptTextResponse)
-async def decrypt_text(decrypt_request: DecryptTextRequest):
-    """
-    Decrypt a single encrypted text string
-    """
-    try:
-        # Decode the keys
-        public_key_n = decode_public_key(decrypt_request.publicKey)
-        p, q = decode_private_key(decrypt_request.privateKey)
-        
-        # Validate keys
-        if public_key_n != p * q:
-            raise HTTPException(status_code=400, detail="Public and private keys don't match")
-        
-        # Decrypt the text
-        decrypted_text = decrypt_string_bgn(decrypt_request.encryptedText, public_key_n, p, q)
-        
-        return DecryptTextResponse(decryptedText=decrypted_text)
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Text decryption error: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Text decryption failed: {str(e)}"
-        )
-
-# New Endpoints for Character-by-Character Encryption (matching your notebook)
-@app.post("/encrypt-text-chars", response_model=EncryptTextResponse)
-async def encrypt_text_chars(request: EncryptTextRequest):
-    """
-    Encrypt text character by character (matching BGN_Encrypt_Text_Message.ipynb method)
-    """
-    try:
-        # Decode the public key
-        public_key_n = decode_public_key(request.publicKey)
-        
-        # Encrypt character by character
-        encrypted_chars = encrypt_text_character_by_character(request.message, public_key_n)
-        
-        return EncryptTextResponse(
-            encryptedChars=encrypted_chars,
-            characterCount=len(encrypted_chars)
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Character encryption error: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Character encryption failed: {str(e)}"
-        )
-
-@app.post("/decrypt-character-array", response_model=DecryptCharArrayResponse)
-async def decrypt_character_array_v2(request: DecryptCharArrayRequest):
-    """
-    Decrypt an array of encrypted characters (matching your notebook method)
-    """
-    try:
-        # Decode private key
-        p, q = decode_private_key(request.privateKey)
-        
-        # Decrypt character by character
-        decrypted_message = decrypt_character_by_character(request.encryptedChars, p, q)
-        
-        return DecryptCharArrayResponse(
-            decryptedMessage=decrypted_message,
-            characterCount=len(decrypted_message)
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Character array decryption error: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Character array decryption failed: {str(e)}"
-        )
-
-# Example usage endpoint
-@app.get("/example")
-async def get_example():
-    """
-    Returns an example of the expected input format
-    """
+    """Root endpoint with API information"""
     return {
-        "example_input": {
-            "candidateId": "blazing-titan",
-            "timestamp": "2025-07-08T16:13:24.000Z",
-            "walletAddress": "0x7D11c7F2594525Af3Bc2ba611A804a1A235c2FF0",
-            "voteHash": "0xf20aa3ffa7b47518dbeddcb1f0f0b4c3b9950049ebcafc37d36eccb7573b4405",
-            "blockNumber": "0",
-            "transactionHash": "0x3a9aa3fb330361635e9106a4b1f83682a7d9e37b9ef5d79e63235fa81ac5be24",
-            "publicKey": "eyJuIjogIjMxMjEzNTQxMjczNTQ2MjIyOTU2ODgwNDMyNjk0NzYwNDkxMzkyNzgyNjgxODg1MzMwNjM2ODAxNjA2MTA0MzUzMzY5MTEyNTc3MDU1Mjc0Mjg5NDY1NDQ4NDc0ODYxMzU2NzYwNjE4NjYyMTE2OTMzNTc1NDc4NDc1MTE3NTIyNzA3NjQ1NTM3NDU3NjAzNzEwNTcwMTgwNzAxIn0"
+        "message": "BGN Encryption API",
+        "version": "1.0.0",
+        "endpoints": {
+            "generate_keys": "/generate-keys",
+            "encrypt_vote": "/encrypt-vote",
+            "encrypt_string": "/encrypt-string"
         }
     }
 
-@app.post("/test-key")
-async def test_key_decoding(request: dict):
-    """
-    Test endpoint to debug public key decoding
-    """
-    try:
-        public_key = request.get("publicKey")
-        if not public_key:
-            raise HTTPException(status_code=400, detail="publicKey field required")
-        
-        # Decode the public key
-        public_key_n = decode_public_key(public_key)
-        
-        return {
-            "status": "success",
-            "decoded_key": str(public_key_n),
-            "key_length": len(str(public_key_n)),
-            "key_bit_length": public_key_n.bit_length(),
-            "original_key": public_key[:50] + "..." if len(public_key) > 50 else public_key
-        }
-    
-    except Exception as e:
-        return {
-            "status": "error",
-            "error": str(e)
-        }
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
 
-@app.post("/test-encryption")
-async def test_encryption(request: dict):
-    """
-    Test endpoint to debug encryption process
-    """
+@app.get("/key-info")
+async def get_key_info():
+    """Get information about current keys"""
     try:
-        public_key = request.get("publicKey")
-        test_message = request.get("message", "test")
-        
-        if not public_key:
-            raise HTTPException(status_code=400, detail="publicKey field required")
-        
-        # Decode the public key
-        public_key_n = decode_public_key(public_key)
-        
-        # Test encryption
-        encrypted = encrypt_string(test_message, public_key_n)
-        
+        public_key_n = load_public_key('bgn_keys/bgn_public.pem')
         return {
-            "status": "success",
-            "original_message": test_message,
-            "encrypted_message": encrypted,
-            "public_key_n": str(public_key_n)[:100] + "..." if len(str(public_key_n)) > 100 else str(public_key_n)
+            "public_key_exists": True,
+            "public_key_n": public_key_n,
+            "key_bit_length": public_key_n.bit_length()
         }
-    
     except Exception as e:
         return {
-            "status": "error",
-            "error": str(e)
-        }
-
-# New endpoint to add known strings to lookup table
-@app.post("/add-lookup-candidate")
-async def add_lookup_candidate(request: dict):
-    """
-    Add a known string to the lookup table for better decryption
-    Expected format: {"candidate": "string_to_add"}
-    """
-    try:
-        candidate = request.get("candidate")
-        if not candidate:
-            raise HTTPException(status_code=400, detail="candidate field required")
-        
-        # Test what hash value this candidate produces
-        candidate_hash = string_to_int(candidate)
-        
-        return {
-            "status": "success",
-            "candidate": candidate,
-            "hash_value": str(candidate_hash),
-            "message": f"Add '{candidate}' to your lookup table in int_to_string_hash_reverse function"
-        }
-        
-    except Exception as e:
-        return {
-            "status": "error",
-            "error": str(e)
-        }
-    """
-    Test endpoint to debug decryption process
-    """
-    try:
-        encrypted_text = request.get("encryptedText")
-        public_key = request.get("publicKey")
-        private_key = request.get("privateKey")
-        
-        if not all([encrypted_text, public_key, private_key]):
-            raise HTTPException(
-                status_code=400, 
-                detail="encryptedText, publicKey, and privateKey fields required"
-            )
-        
-        # Decode keys
-        public_key_n = decode_public_key(public_key)
-        p, q = decode_private_key(private_key)
-        
-        # Test decryption
-        decrypted = decrypt_string_bgn(encrypted_text, public_key_n, p, q)
-        
-        return {
-            "status": "success",
-            "encryptedText": encrypted_text[:50] + "..." if len(encrypted_text) > 50 else encrypted_text,
-            "decryptedText": decrypted,
-            "publicKeyN": str(public_key_n)[:50] + "..." if len(str(public_key_n)) > 50 else str(public_key_n),
-            "privateKeyP": str(p)[:50] + "..." if len(str(p)) > 50 else str(p),
-            "privateKeyQ": str(q)[:50] + "..." if len(str(q)) > 50 else str(q)
-        }
-        
-    except Exception as e:
-        return {
-            "status": "error",
+            "public_key_exists": False,
             "error": str(e)
         }
 
 if __name__ == "__main__":
-    import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

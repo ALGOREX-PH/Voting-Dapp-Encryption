@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Dict, List, Any
 import json
@@ -8,7 +9,6 @@ from random import randint
 from sympy import randprime
 import uvicorn
 from datetime import datetime
-from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="BGN Encryption API", version="1.0.0")
 
@@ -44,7 +44,7 @@ class VoteDataWithKey(BaseModel):
 class EncryptedVoteData(BaseModel):
     candidateId: List[str]
     timestamp: List[str]
-    walletAddress: List[str]
+    walletAddress: str  # Keep wallet address unencrypted
     voteHash: List[str]
     blockNumber: List[str]
     transactionHash: str  # Keep transaction hash unencrypted as identifier
@@ -225,14 +225,14 @@ async def decrypt_vote_data(request: DecryptVoteRequest):
         # Decode the base64-encoded private key to get p and q values
         p, q = decode_private_key(request.private_key)
         
-        # Decrypt each field
+        # Decrypt each field (except walletAddress and transactionHash which are unencrypted)
         decrypted_data = DecryptedVoteData(
             candidateId=decrypt_encrypted_list(request.encrypted_data.candidateId, p, q),
             timestamp=decrypt_encrypted_list(request.encrypted_data.timestamp, p, q),
-            walletAddress=decrypt_encrypted_list(request.encrypted_data.walletAddress, p, q),
+            walletAddress=request.encrypted_data.walletAddress,  # Already unencrypted
             voteHash=decrypt_encrypted_list(request.encrypted_data.voteHash, p, q),
             blockNumber=decrypt_encrypted_list(request.encrypted_data.blockNumber, p, q),
-            transactionHash=request.encrypted_data.transactionHash  # Keep unchanged
+            transactionHash=request.encrypted_data.transactionHash  # Already unencrypted
         )
         
         return DecryptVoteResponse(
@@ -274,11 +274,11 @@ async def encrypt_vote_data(vote_data: VoteDataWithKey):
         # Decode the base64-encoded public key to get n value
         public_key_n = decode_public_key(vote_data.public_key)
         
-        # Encrypt each field except transactionHash (keep as identifier)
+        # Encrypt only specified fields (walletAddress and transactionHash remain unencrypted)
         encrypted_data = EncryptedVoteData(
             candidateId=encrypt_string(vote_data.candidateId, public_key_n),
             timestamp=encrypt_string(vote_data.timestamp, public_key_n),
-            walletAddress=encrypt_string(vote_data.walletAddress, public_key_n),
+            walletAddress=vote_data.walletAddress,  # Keep unencrypted
             voteHash=encrypt_string(vote_data.voteHash, public_key_n),
             blockNumber=encrypt_string(vote_data.blockNumber, public_key_n),
             transactionHash=vote_data.transactionHash  # Keep unencrypted
@@ -300,11 +300,11 @@ async def encrypt_vote_data_from_file(vote_data: VoteData):
         # Load public key from file
         public_key_n = load_public_key('bgn_keys/bgn_public.pem')
         
-        # Encrypt each field except transactionHash (keep as identifier)
+        # Encrypt only specified fields (walletAddress and transactionHash remain unencrypted)
         encrypted_data = EncryptedVoteData(
             candidateId=encrypt_string(vote_data.candidateId, public_key_n),
             timestamp=encrypt_string(vote_data.timestamp, public_key_n),
-            walletAddress=encrypt_string(vote_data.walletAddress, public_key_n),
+            walletAddress=vote_data.walletAddress,  # Keep unencrypted
             voteHash=encrypt_string(vote_data.voteHash, public_key_n),
             blockNumber=encrypt_string(vote_data.blockNumber, public_key_n),
             transactionHash=vote_data.transactionHash  # Keep unencrypted
